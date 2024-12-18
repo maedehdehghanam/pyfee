@@ -219,6 +219,122 @@ static inline Tensor view_weight_2d(const Tensor& weight_,
 }
 
 template <typename scalar_t>
+static scalar_t modulo(scalar_t a, scalar_t b) {
+  const scalar_t result = a % b;
+  return result >= 0 ? result : result + b;
+}
+
+template <typename scalar_t>
+static void zero_copy_conv2d_update_output_frame(
+    TensorAccessor<const scalar_t, 3> input,
+    TensorAccessor<scalar_t, 2> output,
+    TensorAccessor<scalar_t, 3> transposed_output,
+    TensorAccessor<const scalar_t, 4> filters,
+    std::optional<TensorAccessor<const scalar_t, 1>> bias,
+    int64_t ow,
+    bool transform_output,
+    int64_t FH,
+    int64_t FW,
+    int64_t SH,
+    int64_t SW,
+    int64_t PH,
+    int64_t PW,
+    int64_t C,
+    int64_t H,
+    int64_t W,
+    int64_t M,
+    int64_t OH,
+    int64_t OW) {
+
+  // Initialize output to zeros
+  for (int i = 0; i < OH; ++i) {
+    for (int j = 0; j < M; ++j) {
+      if (bias.has_value()) {
+        output[i][j] = bias.value()[j];
+      } else {
+        const scalar_t zero = 0;
+        output[i][j] = zero;
+      }
+    }
+  }
+
+  // Calculate width slice of size FW and handle edge cases
+  int64_t iw = ow * SW - PW;
+  int64_t width_start = std::max(0l, iw);
+  int64_t width_end = std::min(W, iw + FW);
+  int64_t width_slice = width_end - width_start;
+
+  if (width_slice <= 0)
+    return;
+
+  // For every element in the filter height
+  for (int fh = 0; fh < FH; ++fh) {
+    // Calculate height slice of size OH and handle edge cases
+    int64_t height_offset = fh - PH;
+    int64_t height_start = 0;
+    if (height_offset < 0) {
+      height_start = std::max(0l, modulo(height_offset, SH));
+    } else {
+      height_start = height_offset;
+    }
+    int64_t height_end = std::min(H, height_offset + OH * SH);
+    int64_t height_slice = static_cast<int64_t>(ceilf(
+        static_cast<float>(height_end - height_start) /
+        static_cast<float>(SH)));
+
+    if (height_slice <= 0)
+      continue;
+
+    // Start of the filter block of size 1,FW,C,M
+    const scalar_t* b = nullptr;
+    if (iw < 0) {
+      b = filters[fh][-iw].data();
+    } else {
+      b = filters[fh].data();
+    }
+
+    // Start of the image block of size OH,FW,C
+    const scalar_t* a = input[height_start][width_start].data();
+
+    // Start of the output block of size 1,OH,M
+    scalar_t* c = nullptr;
+    if (height_offset < 0) {
+      int64_t offset = static_cast<int64_t>(floorf(static_cast<float>(height_offset) / static_cast<float>(SH)));
+      c = output[-offset].data();
+    } else {
+      c = output.data();
+    }
+
+    int64_t M_dim = height_slice;
+    int64_t K_dim = width_slice * C;
+    int64_t N_dim = M;
+    scalar_t alpha = 1.0f;
+    scalar_t beta = 1.0f;
+    int64_t lda = W*C*SH;
+    int64_t ldb = N_dim;
+    int64_t ldc = N_dim;
+    at::native::cpublas::gemm_row_major(
+        TransposeType::NoTranspose,
+        TransposeType::NoTranspose,
+        M_dim, N_dim, K_dim,
+        alpha,
+        a, lda,
+        b, ldb,
+        beta,
+        c, ldc);
+  }
+
+  // Copy the temporary output to the actual output
+  if (transform_output) {
+    for (auto i = 0; i < OH; ++i) {
+      for (auto j = 0; j < M; ++j) {
+        transposed_output[i][ow][j] = output[i][j];
+      }
+    }
+  }
+}
+
+template <typename scalar_t>
 static void slow_conv2d_update_output_frame(
     TensorAccessor<const scalar_t, 3> input,
     TensorAccessor<scalar_t, 3> output,
@@ -534,6 +650,172 @@ static void slow_conv2d_backward_weight_out_cpu_template(
 }
 
 } // namespace
+
+Tensor& zero_copy_conv2d_forward_out_cpu(
+    const Tensor& self,
+    const Tensor& weight_,
+    IntArrayRef kernel_size, const std::optional<Tensor>& bias_opt,
+    IntArrayRef stride,
+    IntArrayRef padding,
+    Tensor& output,
+    bool transform_weights = true,
+    bool transform_output = true) {
+  // See [Note: hacky wrapper removal for optional tensor]
+
+  TORCH_CHECK(kernel_size.size() == 2, "2D kernel_size expected");
+  TORCH_CHECK(stride.size() == 2, "2D stride expected");
+  TORCH_CHECK(padding.size() == 2, "2D padding expected");
+  TORCH_CHECK(self.is_contiguous(at::MemoryFormat::ChannelsLast), "Channel last input expected");
+  TORCH_CHECK(weight_.is_contiguous(at::MemoryFormat::ChannelsLast), "Channel last weight expected");
+
+  c10::MaybeOwned<Tensor> bias_maybe_owned = at::borrow_from_optional_tensor(bias_opt);
+  const Tensor& bias = *bias_maybe_owned;
+
+  const int64_t kernel_height = kernel_size[0];
+  const int64_t kernel_width = kernel_size[1];
+  const int64_t pad_height = padding[0];
+  const int64_t pad_width = padding[1];
+  const int64_t stride_height = stride[0];
+  const int64_t stride_width = stride[1];
+
+  // TODO: check if type if float
+  if constexpr (!AT_BUILD_WITH_BLAS()) {
+    std::cout << "NOT using zero copy: no blas" << std::endl;
+    return slow_conv2d_forward_out_cpu(
+      self, weight_, kernel_size, bias, stride, padding, output);
+  }
+
+  slow_conv2d_shape_check(
+      self,
+      Tensor(),
+      weight_,
+      bias,
+      kernel_height,
+      kernel_width,
+      stride_height,
+      stride_width,
+      pad_height,
+      pad_width,
+      false);
+
+  const int64_t batch_size = self.size(0);
+  const int64_t input_channels = self.size(1);
+  const int64_t input_height = self.size(2);
+  const int64_t input_width = self.size(3);
+  const int64_t output_channels = weight_.size(0);
+  const int64_t output_height = (input_height + 2 * pad_height - kernel_height) / stride_height + 1;
+  const int64_t output_width = (input_width + 2 * pad_width - kernel_width) / stride_width + 1;
+
+  // Make channels last channel last tensors contiguous without changing storage
+  const Tensor input = self.permute({0, 2, 3, 1});
+  Tensor weight = weight_.permute({0, 2, 3, 1});
+
+  // Change weight layout to the one expected by zero copy conv
+  // OC,KH,KW,IC -> KH,KW,IC,OC
+  if (transform_weights) {
+    weight = weight.permute({1, 2, 3, 0}).contiguous();
+  }
+
+  // Height and width are swapped, using channel last manually
+  output.resize_({batch_size, output_width, output_height, output_channels});
+  TORCH_CHECK(output.is_contiguous(), "Contiguous output tensor expected");
+
+  AT_DISPATCH_ALL_TYPES_AND2(kBFloat16, kHalf, input.scalar_type(), "zero_copy_conv2d_cpu", [&]{
+    auto input_a = input.accessor<const scalar_t, 4>();
+    auto output_a = output.accessor<scalar_t, 4>();
+    auto weight_a = weight.accessor<const scalar_t, 4>();
+    std::optional<TensorAccessor<const scalar_t, 1>> bias_a;
+    if (bias.defined()) {
+      bias_a = bias.accessor<const scalar_t, 1>();
+    }
+
+    at::parallel_for(0, batch_size*output_width, 0, [&](int64_t start, int64_t end) {
+      Tensor tmp_output;
+      if (transform_output) {
+        tmp_output = at::empty({output_height, output_channels}, output.options());
+      }
+
+      for (const auto t : c10::irange(start, end)) {
+        long b_idx = t / output_width;
+        long ow_idx = t % output_width;
+        auto input_t = input_a[b_idx];
+        auto output_t = output_a[b_idx][ow_idx];
+        if (transform_output) {
+          output_t = tmp_output.accessor<scalar_t, 2>();
+        }
+        auto transposed_output = output_a[b_idx];
+
+        zero_copy_conv2d_update_output_frame(
+            input_t,
+            output_t,
+            transposed_output,
+            weight_a,
+            bias_a,
+            ow_idx,
+            transform_output,
+            kernel_height,
+            kernel_width,
+            stride_height,
+            stride_width,
+            pad_height,
+            pad_width,
+            input_channels,
+            input_height,
+            input_width,
+            output_channels,
+            output_height,
+            output_width);
+      }
+    });
+  });
+
+  // Make it channels last
+  output = output.permute({0, 3, 1, 2});
+
+  return output;
+}
+
+Tensor zero_copy_conv2d_forward_cpu(
+    const Tensor& self,
+    const Tensor& weight,
+    IntArrayRef kernel_size, const std::optional<Tensor>& bias_opt,
+    IntArrayRef stride,
+    IntArrayRef padding) {
+  // See [Note: hacky wrapper removal for optional tensor]
+  c10::MaybeOwned<Tensor> bias_maybe_owned = at::borrow_from_optional_tensor(bias_opt);
+  const Tensor& bias = *bias_maybe_owned;
+
+  auto output = at::empty({0}, self.options());
+  bool transform_weights = true;
+  bool transform_output = true;
+
+  if (const char* env = std::getenv("ZERO_COPY_TRANSFORM_WEIGHTS")) {
+    std::string env_str(env);
+    if (env_str == "FALSE") {
+      transform_weights = false;
+    }
+  }
+
+  if (const char* env = std::getenv("ZERO_COPY_TRANSFORM_OUTPUT")) {
+    std::string env_str(env);
+    if (env_str == "FALSE") {
+      transform_output = false;
+    }
+  }
+
+  at::native::zero_copy_conv2d_forward_out_cpu(
+      self,
+      weight,
+      kernel_size,
+      bias,
+      stride,
+      padding,
+      output,
+      transform_weights,
+      transform_output);
+
+  return output;
+}
 
 Tensor& slow_conv2d_forward_out_cpu(
     const Tensor& self,

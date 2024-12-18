@@ -120,6 +120,17 @@ CBLAS_TRANSPOSE to_apple_accelerate_transpose(TransposeType trans) {
 }
 #endif
 
+#if (AT_BUILD_WITH_BLAS())
+CBLAS_TRANSPOSE to_blas_transpose(TransposeType trans) {
+  switch (trans) {
+    case TransposeType::Transpose: return CblasTrans;
+    case TransposeType::NoTranspose: return CblasNoTrans;
+    case TransposeType::ConjTranspose: return CblasConjTrans;
+  }
+  TORCH_INTERNAL_ASSERT(false, "Invalid transpose type");
+}
+#endif
+
 }  // namespace (anonymous)
 
 DEFINE_DISPATCH(gemm_stub);
@@ -448,6 +459,374 @@ void gemm(
 }
 
 void gemm(
+    TransposeType transa, TransposeType transb,
+    int64_t m, int64_t n, int64_t k,
+    const int64_t alpha,
+    const int64_t *a, int64_t lda,
+    const int64_t *b, int64_t ldb,
+    const int64_t beta,
+    int64_t *c, int64_t ldc) {
+  internal::normalize_last_dims(transa, transb, m, n, k, &lda, &ldb, &ldc);
+#ifdef USE_FBGEMM
+  if (alpha == 1 && (beta == 0 || beta == 1)) {
+    // In FBGEMM, we assume row-major ordering; However, here we assume the
+    // column-major ordering following the FORTRAN tradition in BLAS interface
+    // in this function: we can configure the layout (row/column-major ordering)
+    // of A and B by changing transa_ and transb_, but we cannot change the
+    // layout of C with this FORTRAN-style BLAS interface.
+    //
+    // The workaround is that we compute
+    // C^T (n x m) = B^T (n x k) * A^T (k x m) instead.
+    //
+    // In this way we view C^T as the row-major ordering when passing to FBGEMM.
+    fbgemm::cblas_gemm_i64_i64acc(
+        to_fbgemm(transb),
+        to_fbgemm(transa),
+        n,
+        m,
+        k,
+        b,
+        ldb,
+        a,
+        lda,
+        beta == 1,
+        c,
+        ldc);
+    return;
+  }
+#endif
+
+  gemm_stub(
+      kCPU, kLong,
+      transa, transb, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc);
+}
+
+DEFINE_DISPATCH(gemm_row_major_stub);
+
+void gemm_row_major(
+    TransposeType transa, TransposeType transb,
+    int64_t m, int64_t n, int64_t k,
+    const double alpha,
+    const double *a, int64_t lda,
+    const double *b, int64_t ldb,
+    const double beta,
+    double *c, int64_t ldc) {
+  internal::normalize_last_dims(transa, transb, m, n, k, &lda, &ldb, &ldc);
+#if AT_BUILD_WITH_BLAS()
+  if (use_blas_gemm(transa, transb, m, n, k, lda, ldb, ldc)) {
+    int m_ = m, n_ = n, k_ = k, lda_ = lda, ldb_ = ldb, ldc_ = ldc;
+    double alpha_ = alpha, beta_ = beta;
+    #if C10_IOS
+    CBLAS_TRANSPOSE transa_ = to_apple_accelerate_transpose(transa);
+    CBLAS_TRANSPOSE transb_ = to_apple_accelerate_transpose(transb);
+    cblas_dgemm(CblasColMajor,
+      transa_, transb_,
+      m_, n_, k_,
+      alpha_,
+      a, lda_,
+      b, ldb_,
+      beta_,
+      c, ldc_);
+    #else
+    char transa_ = to_blas(transa), transb_ = to_blas(transb);
+    dgemm_(
+        &transa_, &transb_,
+        &m_, &n_, &k_,
+        &alpha_,
+        a, &lda_,
+        b, &ldb_,
+        &beta_,
+        c, &ldc_);
+    #endif
+    return;
+  }
+#endif
+  gemm_stub(
+      at::kCPU, at::kDouble,
+      transa, transb, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc);
+}
+
+void gemm_row_major(
+    TransposeType transa, TransposeType transb,
+    int64_t m, int64_t n, int64_t k,
+    const float alpha,
+    const float *a, int64_t lda,
+    const float *b, int64_t ldb,
+    const float beta,
+    float *c, int64_t ldc) {
+// #if AT_MKLDNN_ENABLED()
+//    if (mkldnn_bf32_gemm(transa, transb, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc)) {
+//      return;
+//    }
+// #endif
+#if AT_BUILD_WITH_BLAS()
+  int m_ = m, n_ = n, k_ = k, lda_ = lda, ldb_ = ldb, ldc_ = ldc;
+  float alpha_ = alpha, beta_ = beta;
+  // #if C10_IOS
+  // CBLAS_TRANSPOSE transa_ = to_apple_accelerate_transpose(transa);
+  // CBLAS_TRANSPOSE transb_ = to_apple_accelerate_transpose(transb);
+
+  CBLAS_TRANSPOSE transa_ = to_blas_transpose(transa);
+  CBLAS_TRANSPOSE transb_ = to_blas_transpose(transb);
+  cblas_sgemm(CblasRowMajor,
+    transa_, transb_,
+    m_, n_, k_,
+    alpha_,
+    a, lda_,
+    b, ldb_,
+    beta_,
+    c, ldc_);
+  // #else
+  // char transa_ = to_blas(transa), transb_ = to_blas(transb);
+  // sgemm_(
+  //     &transa_, &transb_,
+  //     &m_, &n_, &k_,
+  //     &alpha_,
+  //     a, &lda_,
+  //     b, &ldb_,
+  //     &beta_,
+  //     c, &ldc_);
+  // #endif
+  return;
+#endif
+  // gemm_stub(
+  //     at::kCPU, at::kFloat,
+  //     transa, transb, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc);
+}
+
+void gemm_row_major(
+    TransposeType transa, TransposeType transb,
+    int64_t m, int64_t n, int64_t k,
+    const c10::complex<double> alpha,
+    const c10::complex<double> *a, int64_t lda,
+    const c10::complex<double> *b, int64_t ldb,
+    const c10::complex<double> beta,
+    c10::complex<double> *c, int64_t ldc) {
+  internal::normalize_last_dims(transa, transb, m, n, k, &lda, &ldb, &ldc);
+#if AT_BUILD_WITH_BLAS()
+  if (use_blas_gemm(transa, transb, m, n, k, lda, ldb, ldc)) {
+    int m_ = m, n_ = n, k_ = k, lda_ = lda, ldb_ = ldb, ldc_ = ldc;
+    c10::complex<double> alpha_ = alpha, beta_ = beta;
+    #if C10_IOS
+    CBLAS_TRANSPOSE transa_ = to_apple_accelerate_transpose(transa);
+    CBLAS_TRANSPOSE transb_ = to_apple_accelerate_transpose(transb);
+    cblas_zgemm(CblasColMajor,
+      transa_, transb_,
+      m_, n_, k_,
+      &alpha_,
+      a, lda_,
+      b, ldb_,
+      &beta_,
+      c, ldc_);
+    #else
+    char transa_ = to_blas(transa), transb_ = to_blas(transb);
+    zgemm_(
+        &transa_, &transb_,
+        &m_, &n_, &k_,
+        &alpha_,
+        a, &lda_,
+        b, &ldb_,
+        &beta_,
+        c, &ldc_);
+    #endif
+    return;
+  }
+#endif
+  gemm_stub(
+      at::kCPU, at::kComplexDouble,
+      transa, transb, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc);
+}
+
+void gemm_row_major(
+    TransposeType transa, TransposeType transb,
+    int64_t m, int64_t n, int64_t k,
+    const c10::complex<float> alpha,
+    const c10::complex<float> *a, int64_t lda,
+    const c10::complex<float> *b, int64_t ldb,
+    const c10::complex<float> beta,
+    c10::complex<float> *c, int64_t ldc) {
+  internal::normalize_last_dims(transa, transb, m, n, k, &lda, &ldb, &ldc);
+#if AT_BUILD_WITH_BLAS()
+  if (use_blas_gemm(transa, transb, m, n, k, lda, ldb, ldc)) {
+    int m_ = m, n_ = n, k_ = k, lda_ = lda, ldb_ = ldb, ldc_ = ldc;
+    c10::complex<float> alpha_ = alpha, beta_ = beta;
+    #if C10_IOS
+    CBLAS_TRANSPOSE transa_ = to_apple_accelerate_transpose(transa);
+    CBLAS_TRANSPOSE transb_ = to_apple_accelerate_transpose(transb);
+    cblas_cgemm(CblasColMajor,
+      transa_, transb_,
+      m_, n_, k_,
+      &alpha_,
+      a, lda_,
+      b, ldb_,
+      &beta_,
+      c, ldc_);
+    #else
+    char transa_ = to_blas(transa), transb_ = to_blas(transb);
+    cgemm_(
+        &transa_, &transb_,
+        &m_, &n_, &k_,
+        &alpha_,
+        a, &lda_,
+        b, &ldb_,
+        &beta_,
+        c, &ldc_);
+    #endif
+    return;
+  }
+#endif
+  gemm_stub(
+      at::kCPU, at::kComplexFloat,
+      transa, transb, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc);
+}
+
+void gemm_row_major(
+   TransposeType transa, TransposeType transb,
+   int64_t m, int64_t n, int64_t k,
+   const float alpha,
+   const at::BFloat16 *a, int64_t lda,
+   const at::BFloat16 *b, int64_t ldb,
+   const float beta,
+   at::BFloat16 *c, int64_t ldc) {
+   internal::normalize_last_dims(transa, transb, m, n, k, &lda, &ldb, &ldc);
+#if AT_BUILD_WITH_BLAS() && defined(BLAS_HAS_SBGEMM)
+   if (use_blas_gemm(transa, transb, m, n, k, lda, ldb, ldc)) {
+      int m_ = m, n_ = n, k_ = k, lda_ = lda, ldb_ = ldb, ldc_ = ldc;
+      char transa_ = to_blas(transa), transb_ = to_blas(transb);
+      float alpha_ = alpha, beta_ = beta;
+      int c_size = n_ * ldc_;
+      // C matrix in OpenBLAS sbgemm are of type "float" so we have to convert, copy and copy back.
+      std::vector<float> float_v(c, c + c_size);
+      sbgemm_(&transa_, &transb_,
+              &m_, &n_, &k_,
+              &alpha_,
+              a, &lda_,
+              b, &ldb_,
+              &beta_,
+              float_v.data(), &ldc_);
+      for (auto cv: float_v) {
+        *(c++) = c10::convert<at::BFloat16>(cv);
+      }
+      return;
+   }
+#endif
+#if AT_MKLDNN_ENABLED()
+   if (mkldnn_bf16_gemm(transa, transb, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc)) {
+     return;
+   }
+#endif
+   gemm_stub(
+      at::kCPU, at::kBFloat16,
+      transa, transb, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc);
+}
+
+void gemm_row_major(
+   TransposeType transa, TransposeType transb,
+   int64_t m, int64_t n, int64_t k,
+   const float alpha,
+   const at::Half *a, int64_t lda,
+   const at::Half *b, int64_t ldb,
+   const float beta,
+   at::Half *c, int64_t ldc) {
+   internal::normalize_last_dims(transa, transb, m, n, k, &lda, &ldb, &ldc);
+#if AT_MKLDNN_ENABLED()
+   if (mkldnn_fp16_gemm(transa, transb, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc)) {
+     return;
+   }
+#endif
+   gemm_stub(
+      at::kCPU, at::kHalf,
+      transa, transb, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc);
+}
+
+void gemm_row_major(
+    TransposeType transa, TransposeType transb,
+    int64_t m, int64_t n, int64_t k,
+    const float alpha,
+    const at::BFloat16 *a, int64_t lda,
+    const at::BFloat16 *b, int64_t ldb,
+    const float beta,
+    float *c, int64_t ldc) {
+  internal::normalize_last_dims(transa, transb, m, n, k, &lda, &ldb, &ldc);
+#if AT_BUILD_WITH_BLAS() && defined(BLAS_HAS_SBGEMM)
+   if (use_blas_gemm(transa, transb, m, n, k, lda, ldb, ldc)) {
+      int m_ = m, n_ = n, k_ = k, lda_ = lda, ldb_ = ldb, ldc_ = ldc;
+      char transa_ = to_blas(transa), transb_ = to_blas(transb);
+      float alpha_ = alpha, beta_ = beta;
+      sbgemm_(&transa_, &transb_,
+              &m_, &n_, &k_,
+              &alpha_,
+              a, &lda_,
+              b, &ldb_,
+              &beta_,
+              c, &ldc_);
+      return;
+   }
+#endif
+#ifdef MKL_HAS_SBGEMM
+  if (use_blas_gemm(transa, transb, m, n, k, lda, ldb, ldc)) {
+    int m_ = m, n_ = n, k_ = k, lda_ = lda, ldb_ = ldb, ldc_ = ldc;
+    mkl_gemm_bf16bf16f32(transa, transb, m_, n_, k_, alpha, a, lda_, b, ldb_, beta, c, ldc_);
+    return;
+  }
+#endif
+  // for the fallback path, first compute gemm with beta = 0,
+  // and then add c in full precision.
+  int64_t c_size = n * m;
+  std::vector<at::BFloat16> bfloat_c(c_size, 0.f);
+  gemm_stub(
+      at::kCPU, at::kBFloat16,
+      transa, transb, m, n, k, alpha, a, lda, b, ldb, 0.f, bfloat_c.data(), m);
+  for (const auto j : c10::irange(n)) {
+    for (const auto i : c10::irange(m)) {
+      auto offset = j * ldc + i;
+      // beta == 0 won't propagate NaN from C
+      if (beta == 0.f) {
+        c[offset] = c10::convert<float>(bfloat_c[j * m + i]);
+      } else {
+        c[offset] = beta * c[offset] + c10::convert<float>(bfloat_c[j * m + i]);
+      }
+    }
+  }
+}
+
+void gemm_row_major(
+    TransposeType transa, TransposeType transb,
+    int64_t m, int64_t n, int64_t k,
+    const float alpha,
+    const at::Half *a, int64_t lda,
+    const at::Half *b, int64_t ldb,
+    const float beta,
+    float *c, int64_t ldc) {
+  internal::normalize_last_dims(transa, transb, m, n, k, &lda, &ldb, &ldc);
+#ifdef MKL_HAS_SHGEMM
+  if (use_blas_gemm(transa, transb, m, n, k, lda, ldb, ldc)) {
+    int m_ = m, n_ = n, k_ = k, lda_ = lda, ldb_ = ldb, ldc_ = ldc;
+    mkl_gemm_f16f16f32(transa, transb, m_, n_, k_, alpha, a, lda_, b, ldb_, beta, c, ldc_);
+    return;
+  }
+#endif
+  // for the fallback path, first compute gemm with beta = 0,
+  // and then add c in full precision.
+  int64_t c_size = n * m;
+  std::vector<at::Half> float16_c(c_size, 0.f);
+  gemm_stub(
+      at::kCPU, at::kHalf,
+      transa, transb, m, n, k, alpha, a, lda, b, ldb, 0.f, float16_c.data(), m);
+  for (const auto j : c10::irange(n)) {
+    for (const auto i : c10::irange(m)) {
+      auto offset = j * ldc + i;
+      // beta == 0 won't propagate NaN from C
+      if (beta == 0.f) {
+        c[offset] = c10::convert<float>(float16_c[j * m + i]);
+      } else {
+        c[offset] = beta * c[offset] + c10::convert<float>(float16_c[j * m + i]);
+      }
+    }
+  }
+}
+
+void gemm_row_major(
     TransposeType transa, TransposeType transb,
     int64_t m, int64_t n, int64_t k,
     const int64_t alpha,

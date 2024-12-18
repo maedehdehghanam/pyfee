@@ -15,6 +15,7 @@
 #include <c10/macros/Macros.h>
 #include <limits>
 #include <utility>
+#include <iostream>
 
 #ifndef AT_PER_OPERATOR_HEADERS
 #include <ATen/Functions.h>
@@ -79,6 +80,7 @@
 #include <ATen/ops/slow_conv_transpose2d.h>
 #include <ATen/ops/slow_conv_transpose3d.h>
 #include <ATen/ops/thnn_conv2d.h>
+#include <ATen/ops/zero_copy_conv2d.h>
 #include <ATen/ops/view_as_real.h>
 #include <ATen/ops/zeros.h>
 #include <ATen/ops/zeros_like.h>
@@ -512,6 +514,26 @@ struct ConvParams {
            && input.dim() <= MIOPEN_DIM_MAX
            && !(groups > 1 && is_dilated()) // MIOpen currently does not support dilation with groups of size > 1
            ;
+  }
+  bool use_zero_copy_2d(const at::Tensor& input, const at::Tensor& weight) const  {
+    bool use = false;
+    if (const char* env = std::getenv("ZERO_COPY_2D")) {
+      std::string env_str(env);
+      if (env_str == "TRUE") {
+        use = true;
+      }
+    }
+
+    return use &&
+           input.device().is_cpu() &&
+           input.ndimension() == 4 &&
+           input.scalar_type() == kFloat &&
+           weight.ndimension() == 4 &&
+           input.is_contiguous(at::MemoryFormat::ChannelsLast) &&
+           weight.is_contiguous(at::MemoryFormat::ChannelsLast) &&
+           groups == 1 &&
+           !is_dilated() &&
+           !transposed;
   }
   bool use_mkldnn(const at::Tensor& input, const at::Tensor& weight) const  {
 #if AT_MKLDNN_ENABLED()
@@ -1240,6 +1262,8 @@ ConvBackend _select_conv_backend(
     } else {
       return ConvBackend::Miopen;
     }
+  } else if (params.use_zero_copy_2d(input, weight)) {
+    return ConvBackend::ZeroCopy2d;
   } else if (params.use_mkldnn(input, weight)) {
     if (params.transposed) {
       return ConvBackend::MkldnnTranspose;
@@ -1439,6 +1463,9 @@ static inline at::MemoryFormat determine_backend_memory_format(
         backend_memory_format = (k == 5) ? at::MemoryFormat::ChannelsLast3d : at::MemoryFormat::ChannelsLast;
       }
       break;
+    case ConvBackend::ZeroCopy2d:
+      backend_memory_format = at::MemoryFormat::ChannelsLast;
+      break;
     case ConvBackend::Slow2d:
     case ConvBackend::SlowDilated2d:
     case ConvBackend::SlowTranspose2d:
@@ -1515,9 +1542,65 @@ at::Tensor _convolution(
   ConvBackend backend = _select_conv_backend(input, weight, bias, c10::OptionalIntArrayRef(bias_sizes_opt), need_backward, params);
   at::MemoryFormat backend_memory_format = determine_backend_memory_format(input, weight, backend);
 
+  std::string backend_str;
+  switch (backend) {
+    case ConvBackend::CudaDepthwise2d: backend_str = "CudaDepthwise2d";
+      break;
+    case ConvBackend::CudaDepthwise3d: backend_str = "CudaDepthwise3d";
+      break;
+    case ConvBackend::Cudnn: backend_str = "Cudnn";
+      break;
+    case ConvBackend::CudnnTranspose: backend_str = "CudnnTranspose";
+      break;
+    case ConvBackend::Empty: backend_str = "Empty";
+      break;
+    case ConvBackend::Miopen: backend_str = "Miopen";
+      break;
+    case ConvBackend::MiopenDepthwise: backend_str = "MiopenDepthwise";
+      break;
+    case ConvBackend::MiopenTranspose: backend_str = "MiopenTranspose";
+      break;
+    case ConvBackend::ZeroCopy2d: backend_str = "ZeroCopy2d";
+      break;
+    case ConvBackend::Mkldnn: backend_str = "Mkldnn";
+      break;
+    case ConvBackend::MkldnnTranspose: backend_str = "MkldnnTranspose";
+      break;
+    case ConvBackend::MkldnnEmpty: backend_str = "MkldnnEmpty";
+      break;
+    case ConvBackend::NnpackSpatial: backend_str = "NnpackSpatial";
+      break;
+    case ConvBackend::Overrideable: backend_str = "Overrideable";
+      break;
+    case ConvBackend::Slow2d: backend_str = "Slow2d";
+      break;
+    case ConvBackend::Slow3d: backend_str = "Slow3d";
+      break;
+    case ConvBackend::SlowDilated2d: backend_str = "SlowDilated2d";
+      break;
+    case ConvBackend::SlowDilated3d: backend_str = "SlowDilated3d";
+      break;
+    case ConvBackend::SlowTranspose2d: backend_str = "SlowTranspose2d";
+      break;
+    case ConvBackend::SlowTranspose3d: backend_str = "SlowTranspose3d";
+      break;
+    case ConvBackend::Winograd3x3Depthwise: backend_str = "Winograd3x3Depthwise";
+      break;
+    case ConvBackend::Xnnpack2d: backend_str = "Xnnpack2d";
+      break;
+    case ConvBackend::Mps: backend_str = "Mps";
+      break;
+    case ConvBackend::MpsTranspose: backend_str = "MpsTranspose";
+      break;
+    default: backend_str = "Unknown";
+      break;
+  }
+
   // Call the backend.
   Tensor output;
   auto kernel_size = weight.sizes().slice(2);
+
+  auto start = std::chrono::high_resolution_clock::now();
   switch (backend) {
     case ConvBackend::CudaDepthwise2d:
       output = at::_conv_depthwise2d(input.contiguous(), weight, kernel_size, bias,
@@ -1583,6 +1666,9 @@ at::Tensor _convolution(
       output = at::miopen_convolution_transpose(
           input.contiguous(backend_memory_format), weight, bias, params.padding, params.output_padding,
           params.stride, params.dilation, params.groups, params.benchmark, params.deterministic);
+      break;
+    case ConvBackend::ZeroCopy2d:
+      output = at::zero_copy_conv2d(input, weight, kernel_size, bias, params.stride, params.padding);
       break;
     case ConvBackend::Mkldnn:
 #if AT_MKLDNN_ENABLED()
@@ -1700,6 +1786,23 @@ at::Tensor _convolution(
 
   if (k == 3 && !input.is_mkldnn() && !input.is_xpu()) {
     output = view3d(output);
+  }
+
+  auto end = std::chrono::high_resolution_clock::now();
+  if (const char* env = std::getenv("SHOW_CONV_TIME")) {
+    std::string env_str(env);
+    if (env_str == "TRUE") {
+      std::chrono::duration<double> elapsed = end - start;
+      int has_bias = bias.defined() ? 1 : 0;
+      std::cout << backend_str << "," << backend_memory_format << ",";
+      std::cout << at::symint::size<int64_t>(input, 0) << " " << at::symint::size<int64_t>(input, 1) << " "
+                << at::symint::size<int64_t>(input, 2) << " " << at::symint::size<int64_t>(input, 3) << " " << weight_sizes[0]
+                << " " << weight_sizes[2] << " " << weight_sizes[3] << " " << params.padding[0]
+                << " " << params.padding[1] << " " << params.padding[0] << " " << params.padding[1]
+                << " " << params.stride[0] << " " << params.stride[1] << " " << params.dilation[0]
+                << " " << params.dilation[1] << " " << params.groups << " " << "0" << " " << has_bias << ",";
+      std::cout << elapsed.count() * 1000 << ",ms" << std::endl;
+    }
   }
 
   return output;
@@ -2211,6 +2314,7 @@ std::tuple<Tensor, Tensor, Tensor> convolution_backward(
       break;
     // Handle backends that don't natively support groups > 1.
     case ConvBackend::NnpackSpatial:
+    case ConvBackend::ZeroCopy2d:
     case ConvBackend::Slow2d:
     case ConvBackend::SlowDilated2d:
     case ConvBackend::SlowDilated3d:

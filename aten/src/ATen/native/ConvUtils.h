@@ -108,6 +108,7 @@ enum class ConvBackend {
   NnpackSpatial,
   Overrideable,
   Slow2d,
+  ZeroCopy2d,
   Slow3d,
   SlowDilated2d,
   SlowDilated3d,

@@ -534,6 +534,7 @@ void cpublas_copy_impl(at::ScalarType type, int64_t n, const void *_x, int64_t i
 
 
 REGISTER_DISPATCH(cpublas::gemm_stub, &cpublas::cpublas_gemm_impl);
+REGISTER_DISPATCH(cpublas::gemm_row_major_stub, &cpublas::cpublas_gemm_impl);
 REGISTER_DISPATCH(cpublas::axpy_stub, &cpublas::cpublas_axpy_impl);
 REGISTER_DISPATCH(cpublas::copy_stub, &cpublas::cpublas_copy_impl);
 
