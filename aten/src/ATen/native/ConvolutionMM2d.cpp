@@ -714,6 +714,8 @@ Tensor& zero_copy_conv2d_forward_out_cpu(
   // OC,KH,KW,IC -> KH,KW,IC,OC
   if (transform_weights) {
     weight = weight.permute({1, 2, 3, 0}).contiguous();
+  } else {
+    weight = weight.reshape({kernel_height, kernel_width, input_channels, output_channels});
   }
 
   // Height and width are swapped, using channel last manually
