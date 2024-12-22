@@ -224,6 +224,121 @@ bool mkldnn_bf32_gemm(
       return mkldnn_gemm<float>(transa, transb, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc);
     }
 
+template<typename scalar_t>
+inline typename std::enable_if_t<
+    std::is_same_v<scalar_t, float> ||
+    std::is_same_v<scalar_t, c10::Half> ||
+    std::is_same_v<scalar_t, c10::BFloat16>,
+    bool>
+mkldnn_gemm_row_major(
+    TransposeType transa, TransposeType transb,
+    int64_t m, int64_t n, int64_t k,
+    float alpha,
+    const scalar_t *a_data, int64_t lda,
+    const scalar_t *b_data, int64_t ldb,
+    float beta,
+    scalar_t *c_data, int64_t ldc) {
+  bool bf16_usable = std::is_same_v<scalar_t, c10::BFloat16> && use_mkldnn_bf16_matmul();
+  bool fp16_usable = std::is_same_v<scalar_t, c10::Half> && use_mkldnn_fp16_matmul();
+  bool bf32_usable = std::is_same_v<scalar_t, float> && use_mkldnn_bf32_matmul();
+  if ( !(bf16_usable || fp16_usable || bf32_usable) ||
+      (m * n * k <= 16 * 16 * 16) || (alpha == 0.0f)) {
+    return false;
+  }
+
+  ideep::attr_t op_attr;
+  // Use mkldnn post ops to perform the add.
+  if (beta != 0.0f) {
+    op_attr = ideep::attr_t::fuse_sum();
+  }
+  if (bf32_usable) op_attr.set_fpmath_mode(dnnl_fpmath_mode_bf16); // bf32 path
+
+  // NOTE: View as c-contiguous to avoid extra reordering in mkldnn
+  // Use identity: C = AB <=> C^T = B^T A^T
+  ideep::tensor::dims a_strides{{lda, 1}}, b_strides{{ldb, 1}}, c_strides{{ldc, 1}};
+  if (transa != TransposeType::NoTranspose) {
+    std::swap(a_strides[0], a_strides[1]);
+  }
+  if (transb != TransposeType::NoTranspose) {
+    std::swap(b_strides[0], b_strides[1]);
+  }
+
+  auto idtype = ideep::tensor::data_type::bf16;
+  if constexpr (std::is_same_v<scalar_t, c10::Half>) {
+    idtype = ideep::tensor::data_type::f16;
+  }
+  if constexpr (std::is_same_v<scalar_t, float>) {
+    idtype = ideep::tensor::data_type::f32;
+  }
+
+  ideep::tensor a({
+      /*sizes=*/{m, k},
+      idtype,
+      /*strides=*/a_strides},
+    const_cast<scalar_t*>(a_data));
+  ideep::tensor b({
+      /*sizes=*/{k, n},
+      idtype,
+      /*strides=*/b_strides},
+    const_cast<scalar_t*>(b_data));
+  ideep::tensor c({
+      /*sizes=*/{m, n},
+      idtype,
+      /*strides=*/c_strides},
+    c_data);
+
+  ideep::matmul_forward::compute(
+      a, b, c, alpha, beta,
+      ideep::scale_t(), ideep::scale_t(), ideep::scale_t(), op_attr);
+
+  if (c.get_data_handle() != c_data){
+    // ideep will query onednn expect format of output
+    // if given output format is not expected, ideep will re-init an output buffer
+    // under this case, we need copy the re-inited buffer back to given buffer
+    ideep::tensor real_output({
+        /*sizes=*/{m, n},
+        idtype,
+        /*strides=*/c_strides},
+      c_data);
+    c.reorder_to(real_output);
+  }
+
+  return true;
+}
+
+bool mkldnn_bf16_gemm_row_major(
+    TransposeType transa, TransposeType transb,
+    int64_t m, int64_t n, int64_t k,
+    float alpha,
+    const c10::BFloat16 *a, int64_t lda,
+    const c10::BFloat16 *b, int64_t ldb,
+    float beta,
+    c10::BFloat16 *c, int64_t ldc) {
+  return mkldnn_gemm_row_major<c10::BFloat16>(transa, transb, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc);
+}
+
+bool mkldnn_fp16_gemm_row_major(
+    TransposeType transa, TransposeType transb,
+    int64_t m, int64_t n, int64_t k,
+    float alpha,
+    const c10::Half *a, int64_t lda,
+    const c10::Half *b, int64_t ldb,
+    float beta,
+    c10::Half *c, int64_t ldc) {
+  return mkldnn_gemm_row_major<c10::Half>(transa, transb, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc);
+}
+
+bool mkldnn_bf32_gemm_row_major(
+    TransposeType transa, TransposeType transb,
+    int64_t m, int64_t n, int64_t k,
+    float alpha,
+    const float *a, int64_t lda,
+    const float *b, int64_t ldb,
+    float beta,
+    float *c, int64_t ldc){
+      return mkldnn_gemm_row_major<float>(transa, transb, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc);
+    }
+
 void mkldnn_matmul(
     const Tensor &mat1,
     const Tensor &mat2,
