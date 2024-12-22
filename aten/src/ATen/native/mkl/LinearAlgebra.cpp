@@ -136,6 +136,21 @@ void mkl_gemm_bf16bf16f32(
 #endif
 }
 
+void mkl_gemm_bf16bf16f32_row_major(
+    TransposeType trans_A, TransposeType trans_B,
+    MKL_INT M, MKL_INT N, MKL_INT K, const float alpha,
+    const c10::BFloat16* A, MKL_INT lda, const c10::BFloat16* B, MKL_INT ldb,
+    const float beta, float* C, MKL_INT ldc) {
+#ifdef MKL_HAS_SBGEMM
+  auto transa_cblas = to_cblas(trans_A);
+  auto transb_cblas = to_cblas(trans_B);
+  cblas_gemm_bf16bf16f32(CblasRowMajor, transa_cblas, transb_cblas, M, N, K, alpha,
+                         (const MKL_BF16*)A, lda, (const MKL_BF16*)B, ldb, beta, C, ldc);
+#else
+  TORCH_INTERNAL_ASSERT(false, "mkl_gemm_bf16bf16f32 requires mkl version > 2021.0");
+#endif
+}
+
 void mkl_gemm_f16f16f32(
     TransposeType trans_A, TransposeType trans_B,
     int M, int N, int K, const float alpha,
@@ -145,6 +160,21 @@ void mkl_gemm_f16f16f32(
   auto transa_cblas = to_cblas(trans_A);
   auto transb_cblas = to_cblas(trans_B);
   cblas_gemm_f16f16f32(CblasColMajor, transa_cblas, transb_cblas, M, N, K, alpha,
+                         (const MKL_F16*)A, lda, (const MKL_F16*)B, ldb, beta, C, ldc);
+#else
+  TORCH_INTERNAL_ASSERT(false, "mkl_gemm_f16f16f32 requires mkl version >= 2024.0");
+#endif
+}
+
+void mkl_gemm_f16f16f32_row_major(
+    TransposeType trans_A, TransposeType trans_B,
+    int M, int N, int K, const float alpha,
+    const c10::Half* A, int lda, const c10::Half* B, int ldb,
+    const float beta, float* C, int ldc) {
+#ifdef MKL_HAS_SHGEMM
+  auto transa_cblas = to_cblas(trans_A);
+  auto transb_cblas = to_cblas(trans_B);
+  cblas_gemm_f16f16f32(CblasRowMajor, transa_cblas, transb_cblas, M, N, K, alpha,
                          (const MKL_F16*)A, lda, (const MKL_F16*)B, ldb, beta, C, ldc);
 #else
   TORCH_INTERNAL_ASSERT(false, "mkl_gemm_f16f16f32 requires mkl version >= 2024.0");

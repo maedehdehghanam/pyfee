@@ -497,6 +497,28 @@ void cpublas_gemm_impl(
       });
 }
 
+void cpublas_gemm_row_major_impl(
+    at::ScalarType type,
+    TransposeType transa, TransposeType transb,
+    int64_t m, int64_t n, int64_t k,
+    const Scalar& alpha,
+    const void *a, int64_t lda,
+    const void *b, int64_t ldb,
+    const Scalar& beta,
+    void *c, int64_t ldc) {
+  _AT_DISPATCH_GEMM_TYPES(type, "cpublas_gemm_row_major_impl", [&]{
+        TORCH_CHECK(false, "Row major GEMM does not have a core implementation.")
+        // using opmath_t = at::opmath_type<scalar_t>;
+        // gemm_core_(
+        //     transa, transb, m, n, k,
+        //     alpha.to<opmath_t>(),
+        //     static_cast<const scalar_t *>(a), lda,
+        //     static_cast<const scalar_t *>(b), ldb,
+        //     beta.to<opmath_t>(),
+        //     static_cast<scalar_t *>(c), ldc);
+      });
+}
+
 void cpublas_axpy_impl(at::ScalarType type, int64_t n, const Scalar& _a, const void *_x, int64_t incx, void *_y, int64_t incy){
   if (type == at::kBool) {
       auto a = _a.to<bool>();
@@ -534,7 +556,7 @@ void cpublas_copy_impl(at::ScalarType type, int64_t n, const void *_x, int64_t i
 
 
 REGISTER_DISPATCH(cpublas::gemm_stub, &cpublas::cpublas_gemm_impl);
-REGISTER_DISPATCH(cpublas::gemm_row_major_stub, &cpublas::cpublas_gemm_impl);
+REGISTER_DISPATCH(cpublas::gemm_row_major_stub, &cpublas::cpublas_gemm_row_major_impl);
 REGISTER_DISPATCH(cpublas::axpy_stub, &cpublas::cpublas_axpy_impl);
 REGISTER_DISPATCH(cpublas::copy_stub, &cpublas::cpublas_copy_impl);
 

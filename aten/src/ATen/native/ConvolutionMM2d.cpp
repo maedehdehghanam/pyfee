@@ -677,13 +677,6 @@ Tensor& zero_copy_conv2d_forward_out_cpu(
   const int64_t stride_height = stride[0];
   const int64_t stride_width = stride[1];
 
-  // TODO: check if type if float
-  if constexpr (!AT_BUILD_WITH_BLAS()) {
-    std::cout << "NOT using zero copy: no blas" << std::endl;
-    return slow_conv2d_forward_out_cpu(
-      self, weight_, kernel_size, bias, stride, padding, output);
-  }
-
   slow_conv2d_shape_check(
       self,
       Tensor(),

@@ -516,6 +516,11 @@ struct ConvParams {
            ;
   }
   bool use_zero_copy_2d(const at::Tensor& input, const at::Tensor& weight) const  {
+    // Requires row-major gemm that is provided by BLAS
+    if constexpr (!AT_BUILD_WITH_BLAS()) {
+      return false;
+    }
+
     bool use = false;
     if (const char* env = std::getenv("ZERO_COPY_2D")) {
       std::string env_str(env);
