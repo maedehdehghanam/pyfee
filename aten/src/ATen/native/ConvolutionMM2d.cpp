@@ -705,16 +705,15 @@ Tensor& zero_copy_conv2d_forward_out_cpu(
   const int64_t output_height = (input_height + 2 * pad_height - kernel_height) / stride_height + 1;
   const int64_t output_width = (input_width + 2 * pad_width - kernel_width) / stride_width + 1;
 
-  // Make channels last channel last tensors contiguous without changing storage
-  const Tensor input = self.permute({0, 2, 3, 1});
-  Tensor weight = weight_.permute({0, 2, 3, 1});
-
+  const Tensor &input = self;
+  Tensor weight;
   // Change weight layout to the one expected by zero copy conv
   // OC,KH,KW,IC -> KH,KW,IC,OC
   if (transform_weights) {
-    weight = weight.permute({1, 2, 3, 0}).contiguous();
+    // Weights are channel last, but permute dimensions follow contiguous layout (OC,IC,KH,KW)
+    weight = weight_.permute({2, 3, 1, 0}).contiguous();
   } else {
-    weight = weight.reshape({kernel_height, kernel_width, input_channels, output_channels});
+    weight = weight_;
   }
 
   // Height and width are swapped, using channel last manually
