@@ -226,11 +226,11 @@ static scalar_t modulo(scalar_t a, scalar_t b) {
 
 template <typename scalar_t>
 static void zero_copy_conv2d_update_output_frame(
-    TensorAccessor<const scalar_t, 3> input,
-    TensorAccessor<scalar_t, 2> output,
-    TensorAccessor<scalar_t, 3> transposed_output,
-    TensorAccessor<const scalar_t, 4> filters,
-    std::optional<TensorAccessor<const scalar_t, 1>> bias,
+    const scalar_t *input,
+    scalar_t *output,
+    scalar_t *transposed_output,
+    const scalar_t *filters,
+    std::optional<const scalar_t*> bias,
     int64_t ow,
     bool transform_output,
     int64_t FH,
@@ -250,10 +250,9 @@ static void zero_copy_conv2d_update_output_frame(
   for (int i = 0; i < OH; ++i) {
     for (int j = 0; j < M; ++j) {
       if (bias.has_value()) {
-        output[i][j] = bias.value()[j];
+        output[i * M + j] = bias.value()[j];
       } else {
-        const scalar_t zero = 0;
-        output[i][j] = zero;
+        output[i * M + j] = 0;
       }
     }
   }
@@ -288,21 +287,21 @@ static void zero_copy_conv2d_update_output_frame(
     // Start of the filter block of size 1,FW,C,M
     const scalar_t* b = nullptr;
     if (iw < 0) {
-      b = filters[fh][-iw].data();
+      b = &filters[(fh * FW - iw) * C * M];
     } else {
-      b = filters[fh].data();
+      b = &filters[fh * FW * C * M];
     }
 
     // Start of the image block of size OH,FW,C
-    const scalar_t* a = input[height_start][width_start].data();
+    const scalar_t* a = &input[(height_start * W + width_start) * C];
 
     // Start of the output block of size 1,OH,M
     scalar_t* c = nullptr;
     if (height_offset < 0) {
       int64_t offset = static_cast<int64_t>(floorf(static_cast<float>(height_offset) / static_cast<float>(SH)));
-      c = output[-offset].data();
+      c = &output[-offset * M];
     } else {
-      c = output.data();
+      c = output;
     }
 
     int64_t M_dim = height_slice;
@@ -328,7 +327,7 @@ static void zero_copy_conv2d_update_output_frame(
   if (transform_output) {
     for (auto i = 0; i < OH; ++i) {
       for (auto j = 0; j < M; ++j) {
-        transposed_output[i][ow][j] = output[i][j];
+        transposed_output[(i * OW + ow) * M + j] = output[i * M + j];
       }
     }
   }
@@ -723,12 +722,12 @@ Tensor& zero_copy_conv2d_forward_out_cpu(
   TORCH_CHECK(output.is_contiguous(), "Contiguous output tensor expected");
 
   AT_DISPATCH_ALL_TYPES_AND2(kBFloat16, kHalf, input.scalar_type(), "zero_copy_conv2d_cpu", [&]{
-    auto input_a = input.accessor<const scalar_t, 4>();
-    auto output_a = output.accessor<scalar_t, 4>();
-    auto weight_a = weight.accessor<const scalar_t, 4>();
-    std::optional<TensorAccessor<const scalar_t, 1>> bias_a;
+    const scalar_t* input_ptr = input.const_data_ptr<scalar_t>();
+    const scalar_t* weight_ptr = weight.const_data_ptr<scalar_t>();
+    scalar_t* output_ptr = output.data_ptr<scalar_t>();
+    std::optional<const scalar_t *> bias_ptr;
     if (bias.defined()) {
-      bias_a = bias.accessor<const scalar_t, 1>();
+      bias_ptr = bias.const_data_ptr<scalar_t>();
     }
 
     at::parallel_for(0, batch_size*output_width, 0, [&](int64_t start, int64_t end) {
@@ -740,19 +739,19 @@ Tensor& zero_copy_conv2d_forward_out_cpu(
       for (const auto t : c10::irange(start, end)) {
         long b_idx = t / output_width;
         long ow_idx = t % output_width;
-        auto input_t = input_a[b_idx];
-        auto output_t = output_a[b_idx][ow_idx];
+        auto input_t = &input_ptr[b_idx * input_height * input_width * input_channels];
+        auto output_t = &output_ptr[(b_idx * output_width + ow_idx) * output_height * output_channels];
         if (transform_output) {
-          output_t = tmp_output.accessor<scalar_t, 2>();
+          output_t = tmp_output.data_ptr<scalar_t>();
         }
-        auto transposed_output = output_a[b_idx];
+        auto transposed_output = &output_ptr[b_idx * output_width * output_height * output_channels];
 
         zero_copy_conv2d_update_output_frame(
             input_t,
             output_t,
             transposed_output,
-            weight_a,
-            bias_a,
+            weight_ptr,
+            bias_ptr,
             ow_idx,
             transform_output,
             kernel_height,
