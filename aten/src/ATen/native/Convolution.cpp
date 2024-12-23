@@ -532,7 +532,6 @@ struct ConvParams {
     return use &&
            input.device().is_cpu() &&
            input.ndimension() == 4 &&
-           input.scalar_type() == kFloat &&
            weight.ndimension() == 4 &&
            input.is_contiguous(at::MemoryFormat::ChannelsLast) &&
            weight.is_contiguous(at::MemoryFormat::ChannelsLast) &&
