@@ -81,6 +81,7 @@
 #include <ATen/ops/slow_conv_transpose3d.h>
 #include <ATen/ops/thnn_conv2d.h>
 #include <ATen/ops/zero_copy_conv2d.h>
+#include <ATen/ops/zero_copy_conv2d_ext.h>
 #include <ATen/ops/view_as_real.h>
 #include <ATen/ops/zeros.h>
 #include <ATen/ops/zeros_like.h>
@@ -535,8 +536,6 @@ struct ConvParams {
            weight.ndimension() == 4 &&
            input.is_contiguous(at::MemoryFormat::ChannelsLast) &&
            weight.is_contiguous(at::MemoryFormat::ChannelsLast) &&
-           groups == 1 &&
-           !is_dilated() &&
            !transposed;
   }
   bool use_mkldnn(const at::Tensor& input, const at::Tensor& weight) const  {
@@ -1267,7 +1266,11 @@ ConvBackend _select_conv_backend(
       return ConvBackend::Miopen;
     }
   } else if (params.use_zero_copy_2d(input, weight)) {
-    return ConvBackend::ZeroCopy2d;
+    if (params.is_dilated() || params.groups > 1) {
+      return ConvBackend::ZeroCopy2dExt;
+    } else {
+      return ConvBackend::ZeroCopy2d;
+    }
   } else if (params.use_mkldnn(input, weight)) {
     if (params.transposed) {
       return ConvBackend::MkldnnTranspose;
@@ -1468,6 +1471,7 @@ static inline at::MemoryFormat determine_backend_memory_format(
       }
       break;
     case ConvBackend::ZeroCopy2d:
+    case ConvBackend::ZeroCopy2dExt:
       backend_memory_format = at::MemoryFormat::ChannelsLast;
       break;
     case ConvBackend::Slow2d:
@@ -1565,6 +1569,8 @@ at::Tensor _convolution(
     case ConvBackend::MiopenTranspose: backend_str = "MiopenTranspose";
       break;
     case ConvBackend::ZeroCopy2d: backend_str = "ZeroCopy2d";
+      break;
+    case ConvBackend::ZeroCopy2dExt: backend_str = "ZeroCopy2dExt";
       break;
     case ConvBackend::Mkldnn: backend_str = "Mkldnn";
       break;
@@ -1673,6 +1679,9 @@ at::Tensor _convolution(
       break;
     case ConvBackend::ZeroCopy2d:
       output = at::zero_copy_conv2d(input, weight, kernel_size, bias, params.stride, params.padding);
+      break;
+    case ConvBackend::ZeroCopy2dExt:
+      output = at::zero_copy_conv2d_ext(input, weight, kernel_size, bias, params.stride, params.padding, params.dilation, params.groups);
       break;
     case ConvBackend::Mkldnn:
 #if AT_MKLDNN_ENABLED()

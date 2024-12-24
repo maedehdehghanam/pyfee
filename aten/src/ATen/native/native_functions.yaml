@@ -12954,6 +12954,11 @@
   dispatch:
     CPU: zero_copy_conv2d_forward_cpu
 
+- func: zero_copy_conv2d_ext(Tensor self, Tensor weight, SymInt[2] kernel_size, Tensor? bias=None, SymInt[2] stride=1, SymInt[2] padding=0, SymInt[2] dilation=1, SymInt groups=1) -> Tensor
+  python_module: nn
+  dispatch:
+    CPU: zero_copy_conv2d_ext_forward_cpu
+
 - func: _slow_conv2d_forward.output(Tensor self, Tensor weight, SymInt[2] kernel_size, Tensor? bias, SymInt[2] stride, SymInt[2] padding, *, Tensor(a!) output) -> Tensor(a!)
   python_module: nn
   dispatch:

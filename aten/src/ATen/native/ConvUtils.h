@@ -109,6 +109,7 @@ enum class ConvBackend {
   Overrideable,
   Slow2d,
   ZeroCopy2d,
+  ZeroCopy2dExt,
   Slow3d,
   SlowDilated2d,
   SlowDilated3d,

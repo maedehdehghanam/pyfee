@@ -25,6 +25,81 @@ namespace at::native {
 
 namespace {
 
+// Based on mkldnn/Conv.cpp
+static void zero_copy_ext_shape_check(const Tensor& input,
+                                      const Tensor& weight,
+                                      const Tensor& bias,
+                                      const IntArrayRef& padding,
+                                      const IntArrayRef& stride,
+                                      const IntArrayRef& dilation,
+                                      const int64_t groups) {
+#define CONV_ARG_CHECK(IT, OP) std::any_of(IT.begin(), IT.end(), [](auto x) { return x OP 0; })
+  auto is_padding_neg = CONV_ARG_CHECK(padding, <);
+  auto is_stride_nonpos = CONV_ARG_CHECK(stride, <=);
+  auto is_dilation_nonpos = CONV_ARG_CHECK(dilation, <=);
+#undef CONV_ARG_CHECK
+  TORCH_CHECK(!is_padding_neg, "negative padding is not supported");
+  TORCH_CHECK(!is_stride_nonpos, "non-positive stride is not supported");
+  TORCH_CHECK(!is_dilation_nonpos, "non-positive dilation is not supported");
+  TORCH_CHECK(groups > 0, "non-positive groups is not supported");
+
+  int64_t k = input.ndimension();
+  const IntArrayRef& weight_sizes = weight.sizes();
+  int64_t weight_dim = weight_sizes.size();
+
+  TORCH_CHECK(weight_dim == k,
+              "Expected ", weight_dim, "-dimensional input for ", weight_dim,
+              "-dimensional weight ", weight_sizes, ", but got ", k, "-dimensional input of size ",
+              input.sizes(), " instead");
+  TORCH_CHECK(weight_sizes[0] >= groups,
+              "Given groups=", groups, ", expected weight to be at least ", groups,
+              " at dimension 0, but got weight of size ", weight_sizes, " instead");
+  TORCH_CHECK(weight_sizes[0] % groups == 0,
+              "Given groups=", groups, ", expected weight to be divisible by ",
+              groups, " at dimension 0, but got weight of size [", weight_sizes,
+              "] instead");
+  TORCH_CHECK(input.size(1) == (weight_sizes[1] * groups),
+              "Given groups=", groups, ", weight of size ", weight_sizes,
+              ", expected input", input.sizes(), " to have ",
+              (weight_sizes[1] * groups), " channels, but got ", input.size(1),
+              " channels instead");
+  TORCH_CHECK(!bias.defined() || (bias.ndimension() == 1 && bias.size(0) == weight_sizes[0]),
+              "Given weight of size ", weight_sizes,
+              ", expected bias to be 1-dimensional with ", weight_sizes[0], " elements",
+              ", but got bias of size ", bias.sizes(), " instead");
+
+  std::vector<int64_t> input_shape;
+  std::vector<int64_t> kernel_shape;
+  bool kernel_size_correct = true;
+
+  for (const auto i : c10::irange(2, k)) {
+    input_shape.push_back(input.size(i) + 2 * padding[i-2]);
+    // log new kernel size considering dilation
+    kernel_shape.push_back(dilation[i-2] * (weight_sizes[i]-1) + 1);
+    if (input_shape.back() < kernel_shape.back()) {
+      kernel_size_correct = false;
+    }
+  }
+
+  TORCH_CHECK(input_shape.size() == kernel_shape.size(), "Inconsistent shape between Input and Kernel");
+
+  if (!kernel_size_correct) {
+    // If kernel size is incorrect
+    std::ostringstream input_ss;
+    std::ostringstream kernel_ss;
+    std::string separator = "";
+
+    for (int i = 0, len = input_shape.size(); i < len; ++i) {
+      input_ss << separator << input_shape[i];
+      kernel_ss << separator << kernel_shape[i];
+      separator = " x ";
+    }
+
+    TORCH_CHECK(false, "Calculated padded input size per channel: (", input_ss.str(), "). "
+                "Kernel size: (", kernel_ss.str(), "). Kernel size can't be greater than actual input size");
+  }
+}
+
 static Tensor compute_columns2d(
     const Tensor& input,
     IntArrayRef padding,
@@ -321,6 +396,148 @@ static void zero_copy_conv2d_update_output_frame(
         b, ldb,
         beta,
         c, ldc);
+  }
+
+  // Copy the temporary output to the actual output
+  if (transform_output) {
+    for (auto i = 0; i < OH; ++i) {
+      for (auto j = 0; j < M; ++j) {
+        transposed_output[(i * OW + ow) * M + j] = output[i * M + j];
+      }
+    }
+  }
+}
+
+template <typename scalar_t>
+static void zero_copy_conv2d_ext_update_output_frame(
+    const scalar_t* input,
+    scalar_t* tmp_input,
+    scalar_t* output,
+    scalar_t* transposed_output,
+    const scalar_t* filters,
+    std::optional<const scalar_t*> bias,
+    int64_t ow,
+    bool transform_output,
+    int64_t FH,
+    int64_t FW,
+    int64_t SH,
+    int64_t SW,
+    int64_t PH,
+    int64_t PW,
+    int64_t DH,
+    int64_t DW,
+    int64_t GR,
+    int64_t C,
+    int64_t H,
+    int64_t W,
+    int64_t M,
+    int64_t OH,
+    int64_t OW) {
+  const int64_t C_GR = C / GR;
+  const int64_t M_GR = M / GR;
+
+  // Initialize output to zeros
+  for (int i = 0; i < OH; ++i) {
+    for (int j = 0; j < M; ++j) {
+      if (bias.has_value()) {
+        output[i * M + j] = bias.value()[j];
+      } else {
+        output[i * M + j] = 0;
+      }
+    }
+  }
+
+  // Calculate width slice of size FW and handle edge cases
+  // int64_t iw = ow * SW - PW;
+  // int64_t width_start = std::max(0l, iw);
+  // int64_t width_end = std::min(W, iw + FW);
+  // int64_t width_slice = width_end - width_start;
+
+  // Calculate width slice of size FW and handle edge cases
+  int64_t iw = ow * SW - PW;
+  int64_t width_start = std::max(0l, iw);
+  if (iw < 0) {
+    width_start = std::max(0l, modulo(iw, DW));
+  }
+  int64_t width_end = std::min(W, iw + FW * DW);
+  int64_t width_slice = static_cast<int64_t>(ceilf(
+      static_cast<float>(width_end - width_start) / static_cast<float>(DW)));
+
+  if (width_slice <= 0)
+    return;
+
+  // For every element in the filter height
+  for (int fh = 0; fh < FH; ++fh) {
+    // Calculate height slice of size OH and handle edge cases
+    int64_t height_offset = fh * DH - PH;
+    int64_t height_start = height_offset;
+    if (height_offset < 0) {
+      height_start = std::max(0l, modulo(height_offset, SH));
+    }
+    int64_t height_end = std::min(H, height_offset + OH * SH);
+    int64_t height_slice = static_cast<int64_t>(ceilf(
+        static_cast<float>(height_end - height_start) /
+        static_cast<float>(SH)));
+
+    if (height_slice <= 0)
+      continue;
+
+    // For every group of channels
+    for (int gr = 0; gr < GR; ++gr) {
+      // Copy input slice to image buffer following stride
+      // height, width dilation, and channel grouping
+      int buf_index = 0;
+      for (int64_t h = height_start; h < height_end; h += SH) {
+        for (int64_t w = width_start; w < width_end; w += DW) {
+          for (int64_t c_gr = 0; c_gr < C_GR; ++c_gr) {
+            tmp_input[buf_index++] =
+                input[h * W * C + w * C + c_gr + gr * C_GR];
+          }
+        }
+      }
+
+      // Start of the filter block of size 1,FW,C_GR,M
+      const scalar_t* b = &filters[fh * FW * C_GR * M + gr * M_GR];
+      if (iw < 0) {
+        int64_t adjusted_iw = static_cast<int64_t>(
+            floorf(static_cast<float>(iw) / static_cast<float>(DW)));
+        b = &filters[fh * FW * C_GR * M - adjusted_iw * C_GR * M + gr * M_GR];
+      }
+
+      // Start of the image block of size OH,FW,C_GR
+      const scalar_t* a = tmp_input;
+
+      // Start of the output block of size 1,OH,M
+      scalar_t* c = &output[gr * M_GR];
+      if (height_offset < 0) {
+        int64_t offset = static_cast<int64_t>(
+            floorf(static_cast<float>(height_offset) / static_cast<float>(SH)));
+        c = &output[-offset * M + gr * M_GR];
+      }
+
+      int64_t M_dim = height_slice;
+      int64_t K_dim = width_slice * C_GR;
+      int64_t N_dim = M_GR;
+      scalar_t alpha = 1.0f;
+      scalar_t beta = 1.0f;
+      int64_t lda = K_dim;
+      int64_t ldb = M;
+      int64_t ldc = M;
+      at::native::cpublas::gemm_row_major(
+          TransposeType::NoTranspose,
+          TransposeType::NoTranspose,
+          M_dim,
+          N_dim,
+          K_dim,
+          alpha,
+          a,
+          lda,
+          b,
+          ldb,
+          beta,
+          c,
+          ldc);
+    }
   }
 
   // Copy the temporary output to the actual output
@@ -803,6 +1020,173 @@ Tensor zero_copy_conv2d_forward_cpu(
       bias,
       stride,
       padding,
+      output,
+      transform_weights,
+      transform_output);
+
+  return output;
+}
+
+Tensor& zero_copy_conv2d_ext_forward_out_cpu(
+    const Tensor& self,
+    const Tensor& weight_,
+    IntArrayRef kernel_size, const std::optional<Tensor>& bias_opt,
+    IntArrayRef stride,
+    IntArrayRef padding,
+    IntArrayRef dilation,
+    int64_t groups,
+    Tensor& output,
+    bool transform_weights = true,
+    bool transform_output = true) {
+  // See [Note: hacky wrapper removal for optional tensor]
+
+  TORCH_CHECK(kernel_size.size() == 2, "2D kernel_size expected");
+  TORCH_CHECK(stride.size() == 2, "2D stride expected");
+  TORCH_CHECK(padding.size() == 2, "2D padding expected");
+  TORCH_CHECK(dilation.size() == 2, "2D dilation expected");
+  TORCH_CHECK(self.is_contiguous(at::MemoryFormat::ChannelsLast), "Channel last input expected");
+  TORCH_CHECK(weight_.is_contiguous(at::MemoryFormat::ChannelsLast), "Channel last weight expected");
+
+  c10::MaybeOwned<Tensor> bias_maybe_owned = at::borrow_from_optional_tensor(bias_opt);
+  const Tensor& bias = *bias_maybe_owned;
+
+  const int64_t kernel_height = kernel_size[0];
+  const int64_t kernel_width = kernel_size[1];
+  const int64_t pad_height = padding[0];
+  const int64_t pad_width = padding[1];
+  const int64_t stride_height = stride[0];
+  const int64_t stride_width = stride[1];
+  const int64_t dilation_height = dilation[0];
+  const int64_t dilation_width = dilation[1];
+
+  zero_copy_ext_shape_check(self, weight_, bias, padding, stride, dilation, groups);
+
+  const int64_t batch_size = self.size(0);
+  const int64_t input_channels = self.size(1);
+  const int64_t input_height = self.size(2);
+  const int64_t input_width = self.size(3);
+  const int64_t output_channels = weight_.size(0);
+  const int64_t output_height = div_rtn<int64_t>( input_height + 2 * pad_height - (dilation_height * (kernel_height - 1) + 1), stride_height) + 1;
+  const int64_t output_width = div_rtn<int64_t>( input_width + 2 * pad_width - (dilation_width * (kernel_width - 1) + 1), stride_width) + 1;
+
+  const Tensor& input = self;
+  Tensor weight;
+  // Change weight layout to the one expected by zero copy conv
+  // OC,KH,KW,IC -> KH,KW,IC,OC
+  if (transform_weights) {
+    // Weights are channel last, but permute dimensions follow contiguous layout
+    // (OC,IC,KH,KW)
+    weight = weight_.permute({2, 3, 1, 0}).contiguous();
+  } else {
+    weight = weight_;
+  }
+
+  // Height and width are swapped, using channel last manually
+  output.resize_({batch_size, output_width, output_height, output_channels});
+  TORCH_CHECK(output.is_contiguous(), "Contiguous output tensor expected");
+
+  AT_DISPATCH_ALL_TYPES_AND2(kBFloat16, kHalf, input.scalar_type(), "zero_copy_conv2d_cpu", [&]{
+    const scalar_t* input_ptr = input.const_data_ptr<scalar_t>();
+    const scalar_t* weight_ptr = weight.const_data_ptr<scalar_t>();
+    scalar_t* output_ptr = output.data_ptr<scalar_t>();
+    std::optional<const scalar_t *> bias_ptr;
+    if (bias.defined()) {
+      bias_ptr = bias.const_data_ptr<scalar_t>();
+    }
+
+    at::parallel_for(0, batch_size * output_width, 0, [&](int64_t start, int64_t end) {
+      Tensor tmp_output;
+      if (transform_output) {
+        tmp_output = at::empty({output_height, output_channels}, output.options());
+      }
+      Tensor tmp_input = at::empty({output_height, kernel_width, input_channels / groups}, output.options());
+      scalar_t* tmp_input_ptr = tmp_input.data_ptr<scalar_t>();
+
+      for (const auto t : c10::irange(start, end)) {
+        long b_idx = t / output_width;
+        long ow_idx = t % output_width;
+        auto input_t = &input_ptr[b_idx * input_height * input_width * input_channels];
+        auto output_t = &output_ptr[(b_idx * output_width + ow_idx) * output_height * output_channels];
+        if (transform_output) {
+          output_t = tmp_output.data_ptr<scalar_t>();
+        }
+        auto transposed_output = &output_ptr[b_idx * output_width * output_height * output_channels];
+
+        zero_copy_conv2d_ext_update_output_frame(
+            input_t,
+            tmp_input_ptr,
+            output_t,
+            transposed_output,
+            weight_ptr,
+            bias_ptr,
+            ow_idx,
+            transform_output,
+            kernel_height,
+            kernel_width,
+            stride_height,
+            stride_width,
+            pad_height,
+            pad_width,
+            dilation_height,
+            dilation_width,
+            groups,
+            input_channels,
+            input_height,
+            input_width,
+            output_channels,
+            output_height,
+            output_width);
+      }
+    });
+  });
+
+  // Make it channels last
+  output = output.permute({0, 3, 1, 2});
+
+  return output;
+}
+
+Tensor zero_copy_conv2d_ext_forward_cpu(
+    const Tensor& self,
+    const Tensor& weight,
+    IntArrayRef kernel_size,
+    const std::optional<Tensor>& bias_opt,
+    IntArrayRef stride,
+    IntArrayRef padding,
+    IntArrayRef dilation,
+    int64_t groups) {
+  // See [Note: hacky wrapper removal for optional tensor]
+  c10::MaybeOwned<Tensor> bias_maybe_owned =
+      at::borrow_from_optional_tensor(bias_opt);
+  const Tensor& bias = *bias_maybe_owned;
+
+  auto output = at::empty({0}, self.options());
+  bool transform_weights = true;
+  bool transform_output = true;
+
+  if (const char* env = std::getenv("ZERO_COPY_TRANSFORM_WEIGHTS")) {
+    std::string env_str(env);
+    if (env_str == "FALSE") {
+      transform_weights = false;
+    }
+  }
+
+  if (const char* env = std::getenv("ZERO_COPY_TRANSFORM_OUTPUT")) {
+    std::string env_str(env);
+    if (env_str == "FALSE") {
+      transform_output = false;
+    }
+  }
+
+  at::native::zero_copy_conv2d_ext_forward_out_cpu(
+      self,
+      weight,
+      kernel_size,
+      bias,
+      stride,
+      padding,
+      dilation,
+      groups,
       output,
       transform_weights,
       transform_output);
