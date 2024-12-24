@@ -1807,14 +1807,14 @@ at::Tensor _convolution(
     if (env_str == "TRUE") {
       std::chrono::duration<double> elapsed = end - start;
       int has_bias = bias.defined() ? 1 : 0;
-      std::cout << backend_str << "," << backend_memory_format << ",";
-      std::cout << at::symint::size<int64_t>(input, 0) << " " << at::symint::size<int64_t>(input, 1) << " "
+      std::cerr << backend_str << "," << backend_memory_format << ",";
+      std::cerr << at::symint::size<int64_t>(input, 0) << " " << at::symint::size<int64_t>(input, 1) << " "
                 << at::symint::size<int64_t>(input, 2) << " " << at::symint::size<int64_t>(input, 3) << " " << weight_sizes[0]
                 << " " << weight_sizes[2] << " " << weight_sizes[3] << " " << params.padding[0]
                 << " " << params.padding[1] << " " << params.padding[0] << " " << params.padding[1]
                 << " " << params.stride[0] << " " << params.stride[1] << " " << params.dilation[0]
                 << " " << params.dilation[1] << " " << params.groups << " " << "0" << " " << has_bias << ",";
-      std::cout << elapsed.count() * 1000 << ",ms" << std::endl;
+      std::cerr << elapsed.count() * 1000 << ",ms" << std::endl;
     }
   }
 
