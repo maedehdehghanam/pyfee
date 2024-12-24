@@ -448,12 +448,6 @@ static void zero_copy_conv2d_ext_update_output_frame(
   }
 
   // Calculate width slice of size FW and handle edge cases
-  // int64_t iw = ow * SW - PW;
-  // int64_t width_start = std::max(0l, iw);
-  // int64_t width_end = std::min(W, iw + FW);
-  // int64_t width_slice = width_end - width_start;
-
-  // Calculate width slice of size FW and handle edge cases
   int64_t iw = ow * SW - PW;
   int64_t width_start = std::max(0l, iw);
   if (iw < 0) {
