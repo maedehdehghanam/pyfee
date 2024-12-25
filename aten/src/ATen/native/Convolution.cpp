@@ -2328,6 +2328,7 @@ std::tuple<Tensor, Tensor, Tensor> convolution_backward(
     // Handle backends that don't natively support groups > 1.
     case ConvBackend::NnpackSpatial:
     case ConvBackend::ZeroCopy2d:
+    case ConvBackend::ZeroCopy2dExt:
     case ConvBackend::Slow2d:
     case ConvBackend::SlowDilated2d:
     case ConvBackend::SlowDilated3d:
