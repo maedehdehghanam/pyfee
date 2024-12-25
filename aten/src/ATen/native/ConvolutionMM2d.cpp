@@ -344,11 +344,9 @@ static void zero_copy_conv2d_update_output_frame(
     for (int fh = 0; fh < FH; ++fh) {
       // Calculate height slice of size OH and handle edge cases
       int64_t height_offset = fh - PH;
-      int64_t height_start = 0;
+      int64_t height_start = height_offset;
       if (height_offset < 0) {
         height_start = std::max(0l, modulo(height_offset, SH));
-      } else {
-        height_start = height_offset;
       }
       int64_t height_end = std::min(H, height_offset + OH * SH);
       int64_t height_slice = static_cast<int64_t>(ceilf(
@@ -359,23 +357,19 @@ static void zero_copy_conv2d_update_output_frame(
         continue;
 
       // Start of the filter block of size 1,FW,C,M
-      const scalar_t* b = nullptr;
+      const scalar_t* b = &filters[fh * FW * C * M];
       if (iw < 0) {
         b = &filters[(fh * FW - iw) * C * M];
-      } else {
-        b = &filters[fh * FW * C * M];
       }
 
       // Start of the image block of size OH,FW,C
       const scalar_t* a = &input[(height_start * W + width_start) * C];
 
       // Start of the output block of size 1,OH,M
-      scalar_t* c = nullptr;
+      scalar_t* c = output;
       if (height_offset < 0) {
         int64_t offset = static_cast<int64_t>(floorf(static_cast<float>(height_offset) / static_cast<float>(SH)));
         c = &output[-offset * M];
-      } else {
-        c = output;
       }
 
       int64_t M_dim = height_slice;
