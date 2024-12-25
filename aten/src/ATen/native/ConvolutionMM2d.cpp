@@ -338,64 +338,64 @@ static void zero_copy_conv2d_update_output_frame(
   int64_t width_end = std::min(W, iw + FW);
   int64_t width_slice = width_end - width_start;
 
-  if (width_slice <= 0)
-    return;
+  if (width_slice > 0) {
 
-  // For every element in the filter height
-  for (int fh = 0; fh < FH; ++fh) {
-    // Calculate height slice of size OH and handle edge cases
-    int64_t height_offset = fh - PH;
-    int64_t height_start = 0;
-    if (height_offset < 0) {
-      height_start = std::max(0l, modulo(height_offset, SH));
-    } else {
-      height_start = height_offset;
+    // For every element in the filter height
+    for (int fh = 0; fh < FH; ++fh) {
+      // Calculate height slice of size OH and handle edge cases
+      int64_t height_offset = fh - PH;
+      int64_t height_start = 0;
+      if (height_offset < 0) {
+        height_start = std::max(0l, modulo(height_offset, SH));
+      } else {
+        height_start = height_offset;
+      }
+      int64_t height_end = std::min(H, height_offset + OH * SH);
+      int64_t height_slice = static_cast<int64_t>(ceilf(
+          static_cast<float>(height_end - height_start) /
+          static_cast<float>(SH)));
+
+      if (height_slice <= 0)
+        continue;
+
+      // Start of the filter block of size 1,FW,C,M
+      const scalar_t* b = nullptr;
+      if (iw < 0) {
+        b = &filters[(fh * FW - iw) * C * M];
+      } else {
+        b = &filters[fh * FW * C * M];
+      }
+
+      // Start of the image block of size OH,FW,C
+      const scalar_t* a = &input[(height_start * W + width_start) * C];
+
+      // Start of the output block of size 1,OH,M
+      scalar_t* c = nullptr;
+      if (height_offset < 0) {
+        int64_t offset = static_cast<int64_t>(floorf(static_cast<float>(height_offset) / static_cast<float>(SH)));
+        c = &output[-offset * M];
+      } else {
+        c = output;
+      }
+
+      int64_t M_dim = height_slice;
+      int64_t K_dim = width_slice * C;
+      int64_t N_dim = M;
+      scalar_t alpha = 1.0f;
+      scalar_t beta = 1.0f;
+      int64_t lda = W*C*SH;
+      int64_t ldb = N_dim;
+      int64_t ldc = N_dim;
+      at::native::cpublas::gemm_row_major(
+          TransposeType::NoTranspose,
+          TransposeType::NoTranspose,
+          M_dim, N_dim, K_dim,
+          alpha,
+          a, lda,
+          b, ldb,
+          beta,
+          c, ldc);
     }
-    int64_t height_end = std::min(H, height_offset + OH * SH);
-    int64_t height_slice = static_cast<int64_t>(ceilf(
-        static_cast<float>(height_end - height_start) /
-        static_cast<float>(SH)));
-
-    if (height_slice <= 0)
-      continue;
-
-    // Start of the filter block of size 1,FW,C,M
-    const scalar_t* b = nullptr;
-    if (iw < 0) {
-      b = &filters[(fh * FW - iw) * C * M];
-    } else {
-      b = &filters[fh * FW * C * M];
-    }
-
-    // Start of the image block of size OH,FW,C
-    const scalar_t* a = &input[(height_start * W + width_start) * C];
-
-    // Start of the output block of size 1,OH,M
-    scalar_t* c = nullptr;
-    if (height_offset < 0) {
-      int64_t offset = static_cast<int64_t>(floorf(static_cast<float>(height_offset) / static_cast<float>(SH)));
-      c = &output[-offset * M];
-    } else {
-      c = output;
-    }
-
-    int64_t M_dim = height_slice;
-    int64_t K_dim = width_slice * C;
-    int64_t N_dim = M;
-    scalar_t alpha = 1.0f;
-    scalar_t beta = 1.0f;
-    int64_t lda = W*C*SH;
-    int64_t ldb = N_dim;
-    int64_t ldc = N_dim;
-    at::native::cpublas::gemm_row_major(
-        TransposeType::NoTranspose,
-        TransposeType::NoTranspose,
-        M_dim, N_dim, K_dim,
-        alpha,
-        a, lda,
-        b, ldb,
-        beta,
-        c, ldc);
   }
 
   // Copy the temporary output to the actual output
@@ -457,80 +457,80 @@ static void zero_copy_conv2d_ext_update_output_frame(
   int64_t width_slice = static_cast<int64_t>(ceilf(
       static_cast<float>(width_end - width_start) / static_cast<float>(DW)));
 
-  if (width_slice <= 0)
-    return;
+  if (width_slice > 0) {
 
-  // For every element in the filter height
-  for (int fh = 0; fh < FH; ++fh) {
-    // Calculate height slice of size OH and handle edge cases
-    int64_t height_offset = fh * DH - PH;
-    int64_t height_start = height_offset;
-    if (height_offset < 0) {
-      height_start = std::max(0l, modulo(height_offset, SH));
-    }
-    int64_t height_end = std::min(H, height_offset + OH * SH);
-    int64_t height_slice = static_cast<int64_t>(ceilf(
-        static_cast<float>(height_end - height_start) /
-        static_cast<float>(SH)));
+    // For every element in the filter height
+    for (int fh = 0; fh < FH; ++fh) {
+      // Calculate height slice of size OH and handle edge cases
+      int64_t height_offset = fh * DH - PH;
+      int64_t height_start = height_offset;
+      if (height_offset < 0) {
+        height_start = std::max(0l, modulo(height_offset, SH));
+      }
+      int64_t height_end = std::min(H, height_offset + OH * SH);
+      int64_t height_slice = static_cast<int64_t>(ceilf(
+          static_cast<float>(height_end - height_start) /
+          static_cast<float>(SH)));
 
-    if (height_slice <= 0)
-      continue;
+      if (height_slice <= 0)
+        continue;
 
-    // For every group of channels
-    for (int gr = 0; gr < GR; ++gr) {
-      // Copy input slice to image buffer following stride
-      // height, width dilation, and channel grouping
-      int buf_index = 0;
-      for (int64_t h = height_start; h < height_end; h += SH) {
-        for (int64_t w = width_start; w < width_end; w += DW) {
-          for (int64_t c_gr = 0; c_gr < C_GR; ++c_gr) {
-            tmp_input[buf_index++] =
-                input[h * W * C + w * C + c_gr + gr * C_GR];
+      // For every group of channels
+      for (int gr = 0; gr < GR; ++gr) {
+        // Copy input slice to image buffer following stride
+        // height, width dilation, and channel grouping
+        int buf_index = 0;
+        for (int64_t h = height_start; h < height_end; h += SH) {
+          for (int64_t w = width_start; w < width_end; w += DW) {
+            for (int64_t c_gr = 0; c_gr < C_GR; ++c_gr) {
+              tmp_input[buf_index++] =
+                  input[h * W * C + w * C + c_gr + gr * C_GR];
+            }
           }
         }
+
+        // Start of the filter block of size 1,FW,C_GR,M
+        const scalar_t* b = &filters[fh * FW * C_GR * M + gr * M_GR];
+        if (iw < 0) {
+          int64_t adjusted_iw = static_cast<int64_t>(
+              floorf(static_cast<float>(iw) / static_cast<float>(DW)));
+          b = &filters[fh * FW * C_GR * M - adjusted_iw * C_GR * M + gr * M_GR];
+        }
+
+        // Start of the image block of size OH,FW,C_GR
+        const scalar_t* a = tmp_input;
+
+        // Start of the output block of size 1,OH,M
+        scalar_t* c = &output[gr * M_GR];
+        if (height_offset < 0) {
+          int64_t offset = static_cast<int64_t>(
+              floorf(static_cast<float>(height_offset) / static_cast<float>(SH)));
+          c = &output[-offset * M + gr * M_GR];
+        }
+
+        int64_t M_dim = height_slice;
+        int64_t K_dim = width_slice * C_GR;
+        int64_t N_dim = M_GR;
+        scalar_t alpha = 1.0f;
+        scalar_t beta = 1.0f;
+        int64_t lda = K_dim;
+        int64_t ldb = M;
+        int64_t ldc = M;
+        at::native::cpublas::gemm_row_major(
+            TransposeType::NoTranspose,
+            TransposeType::NoTranspose,
+            M_dim,
+            N_dim,
+            K_dim,
+            alpha,
+            a,
+            lda,
+            b,
+            ldb,
+            beta,
+            c,
+            ldc);
       }
-
-      // Start of the filter block of size 1,FW,C_GR,M
-      const scalar_t* b = &filters[fh * FW * C_GR * M + gr * M_GR];
-      if (iw < 0) {
-        int64_t adjusted_iw = static_cast<int64_t>(
-            floorf(static_cast<float>(iw) / static_cast<float>(DW)));
-        b = &filters[fh * FW * C_GR * M - adjusted_iw * C_GR * M + gr * M_GR];
-      }
-
-      // Start of the image block of size OH,FW,C_GR
-      const scalar_t* a = tmp_input;
-
-      // Start of the output block of size 1,OH,M
-      scalar_t* c = &output[gr * M_GR];
-      if (height_offset < 0) {
-        int64_t offset = static_cast<int64_t>(
-            floorf(static_cast<float>(height_offset) / static_cast<float>(SH)));
-        c = &output[-offset * M + gr * M_GR];
-      }
-
-      int64_t M_dim = height_slice;
-      int64_t K_dim = width_slice * C_GR;
-      int64_t N_dim = M_GR;
-      scalar_t alpha = 1.0f;
-      scalar_t beta = 1.0f;
-      int64_t lda = K_dim;
-      int64_t ldb = M;
-      int64_t ldc = M;
-      at::native::cpublas::gemm_row_major(
-          TransposeType::NoTranspose,
-          TransposeType::NoTranspose,
-          M_dim,
-          N_dim,
-          K_dim,
-          alpha,
-          a,
-          lda,
-          b,
-          ldb,
-          beta,
-          c,
-          ldc);
     }
   }
 
@@ -921,7 +921,11 @@ Tensor& zero_copy_conv2d_forward_out_cpu(
   }
 
   // Height and width are swapped, using channel last manually
-  output.resize_({batch_size, output_width, output_height, output_channels});
+  if (transform_output) {
+    output.resize_({batch_size, output_height, output_width, output_channels});
+  } else {
+    output.resize_({batch_size, output_width, output_height, output_channels});
+  }
   TORCH_CHECK(output.is_contiguous(), "Contiguous output tensor expected");
 
   AT_DISPATCH_ALL_TYPES_AND2(kBFloat16, kHalf, input.scalar_type(), "zero_copy_conv2d_cpu", [&]{
