@@ -534,8 +534,8 @@ struct ConvParams {
            input.device().is_cpu() &&
            input.ndimension() == 4 &&
            weight.ndimension() == 4 &&
+           weight.is_non_overlapping_and_dense() &&
            input.is_contiguous(at::MemoryFormat::ChannelsLast) &&
-           weight.is_contiguous(at::MemoryFormat::ChannelsLast) &&
            !transposed;
   }
   bool use_mkldnn(const at::Tensor& input, const at::Tensor& weight) const  {

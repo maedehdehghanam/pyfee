@@ -870,7 +870,6 @@ Tensor& zero_copy_conv2d_forward_out_cpu(
   TORCH_CHECK(stride.size() == 2, "2D stride expected");
   TORCH_CHECK(padding.size() == 2, "2D padding expected");
   TORCH_CHECK(self.is_contiguous(at::MemoryFormat::ChannelsLast), "Channel last input expected");
-  TORCH_CHECK(weight_.is_contiguous(at::MemoryFormat::ChannelsLast), "Channel last weight expected");
 
   c10::MaybeOwned<Tensor> bias_maybe_owned = at::borrow_from_optional_tensor(bias_opt);
   const Tensor& bias = *bias_maybe_owned;
@@ -904,15 +903,8 @@ Tensor& zero_copy_conv2d_forward_out_cpu(
   const int64_t output_width = (input_width + 2 * pad_width - kernel_width) / stride_width + 1;
 
   const Tensor &input = self;
-  Tensor weight;
-  // Change weight layout to the one expected by zero copy conv
-  // OC,KH,KW,IC -> KH,KW,IC,OC
-  if (transform_weights) {
-    // Weights are channel last, but permute dimensions follow contiguous layout (OC,IC,KH,KW)
-    weight = weight_.permute({2, 3, 1, 0}).contiguous();
-  } else {
-    weight = weight_;
-  }
+  // Change weight layout to KH,KW,IC,OC if not already
+  Tensor weight = weight_.permute({2, 3, 1, 0}).contiguous();
 
   // Height and width are swapped, using channel last manually
   if (transform_output) {
@@ -1037,7 +1029,6 @@ Tensor& zero_copy_conv2d_ext_forward_out_cpu(
   TORCH_CHECK(padding.size() == 2, "2D padding expected");
   TORCH_CHECK(dilation.size() == 2, "2D dilation expected");
   TORCH_CHECK(self.is_contiguous(at::MemoryFormat::ChannelsLast), "Channel last input expected");
-  TORCH_CHECK(weight_.is_contiguous(at::MemoryFormat::ChannelsLast), "Channel last weight expected");
 
   c10::MaybeOwned<Tensor> bias_maybe_owned = at::borrow_from_optional_tensor(bias_opt);
   const Tensor& bias = *bias_maybe_owned;
@@ -1062,16 +1053,8 @@ Tensor& zero_copy_conv2d_ext_forward_out_cpu(
   const int64_t output_width = div_rtn<int64_t>( input_width + 2 * pad_width - (dilation_width * (kernel_width - 1) + 1), stride_width) + 1;
 
   const Tensor& input = self;
-  Tensor weight;
-  // Change weight layout to the one expected by zero copy conv
-  // OC,KH,KW,IC -> KH,KW,IC,OC
-  if (transform_weights) {
-    // Weights are channel last, but permute dimensions follow contiguous layout
-    // (OC,IC,KH,KW)
-    weight = weight_.permute({2, 3, 1, 0}).contiguous();
-  } else {
-    weight = weight_;
-  }
+  // Change weight layout to KH,KW,IC,OC if not already
+  Tensor weight = weight_.permute({2, 3, 1, 0}).contiguous();
 
   // Height and width are swapped, using channel last manually
   output.resize_({batch_size, output_width, output_height, output_channels});
