@@ -523,7 +523,7 @@ struct ConvParams {
     }
 
     bool use = false;
-    if (const char* env = std::getenv("ZERO_COPY_2D")) {
+    if (const char* env = std::getenv("ZC_ENABLE")) {
       std::string env_str(env);
       if (env_str == "TRUE") {
         use = true;
@@ -1802,7 +1802,7 @@ at::Tensor _convolution(
   }
 
   auto end = std::chrono::high_resolution_clock::now();
-  if (const char* env = std::getenv("SHOW_CONV_TIME")) {
+  if (const char* env = std::getenv("ZC_TIME")) {
     std::string env_str(env);
     if (env_str == "TRUE") {
       std::chrono::duration<double> elapsed = end - start;

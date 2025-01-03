@@ -862,7 +862,6 @@ Tensor& zero_copy_conv2d_forward_out_cpu(
     IntArrayRef stride,
     IntArrayRef padding,
     Tensor& output,
-    bool transform_weights = true,
     bool transform_output = true) {
   // See [Note: hacky wrapper removal for optional tensor]
 
@@ -980,17 +979,9 @@ Tensor zero_copy_conv2d_forward_cpu(
   const Tensor& bias = *bias_maybe_owned;
 
   auto output = at::empty({0}, self.options());
-  bool transform_weights = true;
   bool transform_output = true;
 
-  if (const char* env = std::getenv("ZERO_COPY_TRANSFORM_WEIGHTS")) {
-    std::string env_str(env);
-    if (env_str == "FALSE") {
-      transform_weights = false;
-    }
-  }
-
-  if (const char* env = std::getenv("ZERO_COPY_TRANSFORM_OUTPUT")) {
+  if (const char* env = std::getenv("ZC_TRANSFORM_OUTPUT")) {
     std::string env_str(env);
     if (env_str == "FALSE") {
       transform_output = false;
@@ -1005,7 +996,6 @@ Tensor zero_copy_conv2d_forward_cpu(
       stride,
       padding,
       output,
-      transform_weights,
       transform_output);
 
   return output;
@@ -1020,7 +1010,6 @@ Tensor& zero_copy_conv2d_ext_forward_out_cpu(
     IntArrayRef dilation,
     int64_t groups,
     Tensor& output,
-    bool transform_weights = true,
     bool transform_output = true) {
   // See [Note: hacky wrapper removal for optional tensor]
 
@@ -1136,17 +1125,9 @@ Tensor zero_copy_conv2d_ext_forward_cpu(
   const Tensor& bias = *bias_maybe_owned;
 
   auto output = at::empty({0}, self.options());
-  bool transform_weights = true;
   bool transform_output = true;
 
-  if (const char* env = std::getenv("ZERO_COPY_TRANSFORM_WEIGHTS")) {
-    std::string env_str(env);
-    if (env_str == "FALSE") {
-      transform_weights = false;
-    }
-  }
-
-  if (const char* env = std::getenv("ZERO_COPY_TRANSFORM_OUTPUT")) {
+  if (const char* env = std::getenv("ZC_TRANSFORM_OUTPUT")) {
     std::string env_str(env);
     if (env_str == "FALSE") {
       transform_output = false;
@@ -1163,7 +1144,6 @@ Tensor zero_copy_conv2d_ext_forward_cpu(
       dilation,
       groups,
       output,
-      transform_weights,
       transform_output);
 
   return output;
