@@ -85,6 +85,8 @@ FUNCTIONAL_OPS_THAT_CANNOT_GET_AN_OUT_VARIANT = [
     "_print",  # no return
     "_sink_tokens",  # no return
     "_nested_get_ragged_idx",  # returns an int
+    "will_use_zero_copy_conv2d_static",  # returns a boolean
+    "will_use_zero_copy_conv2d_dynamic"  # returns a boolean
 ]
 
 INPLACE_OPS_THAT_DONT_GET_GROUPED_PROPERLY = [

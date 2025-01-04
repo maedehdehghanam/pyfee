@@ -637,6 +637,59 @@ struct ConvParams {
   }
 };
 
+// Returns if ZeroCopy2D will be used for the given conv2d configuration
+bool will_use_zero_copy_conv2d_dynamic(
+    const Tensor& input,
+    const Tensor& weight,
+    IntArrayRef kernel_size,
+    const std::optional<Tensor>& bias_opt,
+    IntArrayRef stride,
+    IntArrayRef padding,
+    IntArrayRef dilation,
+    int64_t groups, bool transposed) {
+
+  ConvParams<int64_t> params;
+  params.stride = expand_param_if_needed(stride, "stride", 2);
+  params.padding = expand_param_if_needed(padding, "padding", 2);
+  params.dilation = expand_param_if_needed(dilation, "dilation", 2);
+  params.transposed = transposed;
+  params.groups = groups;
+
+  return params.use_zero_copy_2d(input, weight);
+}
+
+// Returns if ZeroCopy2D will be used for the given conv2d configuration
+// Based on use_zero_copy_2d but adapted to unknown input sizes
+bool will_use_zero_copy_conv2d_static(
+    int64_t input_channels,
+    int64_t output_channels,
+    const Tensor& weight,
+    IntArrayRef kernel_size,
+    const std::optional<Tensor>& bias_opt,
+    IntArrayRef stride,
+    IntArrayRef padding,
+    IntArrayRef dilation,
+    int64_t groups, bool transposed) {
+
+  // Requires row-major gemm that is provided by BLAS
+  if constexpr (!AT_BUILD_WITH_BLAS()) {
+    return false;
+  }
+
+  bool use = false;
+  if (const char* env = std::getenv("ZC_ENABLE")) {
+    std::string env_str(env);
+    if (env_str == "TRUE") {
+      use = true;
+    }
+  }
+
+  return use &&
+         weight.ndimension() == 4 &&
+         weight.is_non_overlapping_and_dense() &&
+         !transposed;
+}
+
 DEFINE_DISPATCH(conv_depthwise2d_backward_stub);
 DEFINE_DISPATCH(conv_depthwise3d_backward_stub);
 DEFINE_DISPATCH(cudnn_convolution_backward_stub);
