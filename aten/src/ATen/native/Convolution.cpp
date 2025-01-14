@@ -94,6 +94,25 @@ namespace at::native {
 
 static bool conv_benchmark_empty_cache = true;
 
+// Integer division rounding to -Infinity
+template <typename T>
+static inline T div_rtn(const T &x, const T &y) {
+  int q = x / y;
+  int r = x % y;
+  if ((r != 0) && ((r < 0) != (y < 0)))
+    --q;
+  return q;
+}
+// Integer division rounding to -Infinity so it works with SymInt
+template<>
+ inline c10::SymInt div_rtn(const c10::SymInt& x, const c10::SymInt& y) {
+  c10::SymInt q = x / y;
+  c10::SymInt r = x % y;
+  if ((r != 0) && ((r < 0) != (y < 0)))
+    return q - 1;
+  return q;
+}
+
 // Check workload to activate fast depthwise FP16 cudnn conv kernels
 template <typename T>
 bool check_cudnn_depthwise_workload(const at::Tensor& input, T stride) {
@@ -530,13 +549,53 @@ struct ConvParams {
       }
     }
 
-    return use &&
-           input.device().is_cpu() &&
-           input.ndimension() == 4 &&
-           weight.ndimension() == 4 &&
-           weight.is_non_overlapping_and_dense() &&
-           input.is_contiguous(at::MemoryFormat::ChannelsLast) &&
-           !transposed;
+    bool heuristic = true;
+    if (const char* env = std::getenv("ZC_HEURISTIC")) {
+      std::string env_str(env);
+      if (env_str == "FALSE") {
+        heuristic = false;
+      }
+    }
+
+    use = use &&
+      input.device().is_cpu() &&
+      input.ndimension() == 4 &&
+      weight.ndimension() == 4 &&
+      weight.is_non_overlapping_and_dense() &&
+      input.is_contiguous(at::MemoryFormat::ChannelsLast) &&
+      !transposed;
+
+    // If heuristic is disabled, return use as is, but also disable ZeroCopy2D_Ext
+    if (!use || !heuristic)
+      return use && !is_dilated() && groups == 1;
+
+    auto kernel_height = at::symint::size<T>(weight, 2);
+    auto input_height = at::symint::size<T>(input, 2);
+
+    if (!is_dilated() && groups == 1) {
+      auto kernel_width = at::symint::size<T>(weight, 3);
+
+      auto input_channel = at::symint::size<T>(input, 1);
+      auto input_width = at::symint::size<T>(input, 3);
+
+      auto n_dim = at::symint::size<T>(weight, 0); // Output channel
+      auto m_dim = (input_height + 2 * padding[0] - kernel_height) / stride[0] + 1; // Output height
+      auto output_width = (input_width + 2 * padding[1] - kernel_width) / stride[1] + 1;
+      auto k_dim = kernel_width * input_channel;
+
+      // Heuristic for normal convolution
+      use = use && ((k_dim > n_dim && k_dim > m_dim) || output_width == 1 || m_dim == 1);
+    }
+    else {
+      auto output_channel = at::symint::size<T>(weight, 0);
+      auto m_dim = div_rtn<T>(input_height + 2 * padding[0] - (dilation[0] * (kernel_height - 1) + 1), stride[0]) + 1;
+      auto n_dim = output_channel / groups;
+
+      // Heuristic for dilated and grouped convolution
+      use = use && (m_dim < n_dim);
+    }
+
+    return use;
   }
   bool use_mkldnn(const at::Tensor& input, const at::Tensor& weight) const  {
 #if AT_MKLDNN_ENABLED()
