@@ -569,30 +569,43 @@ struct ConvParams {
     if (!use || !heuristic)
       return use && !is_dilated() && groups == 1;
 
+    auto batch_size = at::symint::size<T>(input, 0);
     auto kernel_height = at::symint::size<T>(weight, 2);
+    auto kernel_width = at::symint::size<T>(weight, 3);
     auto input_height = at::symint::size<T>(input, 2);
+    auto input_width = at::symint::size<T>(input, 3);
+    auto threads = at::get_num_threads();
 
     if (!is_dilated() && groups == 1) {
-      auto kernel_width = at::symint::size<T>(weight, 3);
 
       auto input_channel = at::symint::size<T>(input, 1);
-      auto input_width = at::symint::size<T>(input, 3);
-
       auto n_dim = at::symint::size<T>(weight, 0); // Output channel
       auto m_dim = (input_height + 2 * padding[0] - kernel_height) / stride[0] + 1; // Output height
       auto output_width = (input_width + 2 * padding[1] - kernel_width) / stride[1] + 1;
       auto k_dim = kernel_width * input_channel;
 
+
+      // Check if there is enough parallelism to at least use all threads
+      use = use && threads <= (batch_size * output_width);
+
       // Heuristic for normal convolution
-      use = use && ((k_dim > n_dim && k_dim > m_dim) || output_width == 1 || m_dim == 1);
+      if (threads > 1) {
+        use = use && ((k_dim > n_dim && k_dim > m_dim) || output_width == 1 || m_dim == 1);
+      } else {
+        use = use && (output_width == 1 || m_dim == 1);
+      }
     }
     else {
       auto output_channel = at::symint::size<T>(weight, 0);
-      auto m_dim = div_rtn<T>(input_height + 2 * padding[0] - (dilation[0] * (kernel_height - 1) + 1), stride[0]) + 1;
+      auto m_dim = div_rtn<T>(input_height + 2 * padding[0] - (dilation[0] * (kernel_height - 1) + 1), stride[0]) + 1; // Output height
+      auto output_width = div_rtn<T>(input_width + 2 * padding[1] - (dilation[1] * (kernel_width - 1) + 1), stride[0]) + 1;
       auto n_dim = output_channel / groups;
 
+      // Check if there is enough parallelism to at least use all threads
+      use = use && threads <= (batch_size * output_width);
+
       // Heuristic for dilated and grouped convolution
-      use = use && (m_dim < n_dim);
+      use = use && (m_dim < n_dim) && threads > 1;
     }
 
     return use;
