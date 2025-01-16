@@ -584,10 +584,6 @@ struct ConvParams {
       auto output_width = (input_width + 2 * padding[1] - kernel_width) / stride[1] + 1;
       auto k_dim = kernel_width * input_channel;
 
-
-      // Check if there is enough parallelism to at least use all threads
-      use = use && threads <= (batch_size * output_width);
-
       // Heuristic for normal convolution
       if (threads > 1) {
         use = use && ((k_dim > n_dim && k_dim > m_dim) || output_width == 1 || m_dim == 1);
@@ -600,9 +596,6 @@ struct ConvParams {
       auto m_dim = div_rtn<T>(input_height + 2 * padding[0] - (dilation[0] * (kernel_height - 1) + 1), stride[0]) + 1; // Output height
       auto output_width = div_rtn<T>(input_width + 2 * padding[1] - (dilation[1] * (kernel_width - 1) + 1), stride[0]) + 1;
       auto n_dim = output_channel / groups;
-
-      // Check if there is enough parallelism to at least use all threads
-      use = use && threads <= (batch_size * output_width);
 
       // Heuristic for dilated and grouped convolution
       use = use && (m_dim < n_dim) && threads > 1;
