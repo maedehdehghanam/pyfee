@@ -682,16 +682,10 @@ struct ConvParams {
 bool will_use_zero_copy_conv2d_dynamic(
     const Tensor& input,
     const Tensor& weight,
-    IntArrayRef kernel_size,
-    const std::optional<Tensor>& bias_opt,
-    IntArrayRef stride,
-    IntArrayRef padding,
     IntArrayRef dilation,
     int64_t groups, bool transposed) {
 
   ConvParams<int64_t> params;
-  params.stride = expand_param_if_needed(stride, "stride", 2);
-  params.padding = expand_param_if_needed(padding, "padding", 2);
   params.dilation = expand_param_if_needed(dilation, "dilation", 2);
   params.transposed = transposed;
   params.groups = groups;
@@ -702,15 +696,16 @@ bool will_use_zero_copy_conv2d_dynamic(
 // Returns if ZeroCopy2D will be used for the given conv2d configuration
 // Based on use_zero_copy_2d but adapted to unknown input sizes
 bool will_use_zero_copy_conv2d_static(
-    int64_t input_channels,
-    int64_t output_channels,
+    int64_t input_channel,
+    int64_t output_channel,
     const Tensor& weight,
-    IntArrayRef kernel_size,
-    const std::optional<Tensor>& bias_opt,
-    IntArrayRef stride,
-    IntArrayRef padding,
     IntArrayRef dilation,
     int64_t groups, bool transposed) {
+
+  ConvParams<int64_t> params;
+  params.dilation = expand_param_if_needed(dilation, "dilation", 2);
+  params.transposed = transposed;
+  params.groups = groups;
 
   // Requires row-major gemm that is provided by BLAS
   if constexpr (!AT_BUILD_WITH_BLAS()) {
@@ -725,10 +720,27 @@ bool will_use_zero_copy_conv2d_static(
     }
   }
 
-  return use &&
-         weight.ndimension() == 4 &&
-         weight.is_non_overlapping_and_dense() &&
-         !transposed;
+  bool heuristic = true;
+  if (const char* env = std::getenv("ZC_HEURISTIC")) {
+    std::string env_str(env);
+    if (env_str == "FALSE") {
+      heuristic = false;
+    }
+  }
+
+  use = use &&
+    weight.ndimension() == 4 &&
+    weight.is_non_overlapping_and_dense() &&
+    !transposed;
+
+  // If heuristic is disabled, return use as is, but also disable ZeroCopy2D_Ext
+  if (!use || !heuristic)
+    return use && !params.is_dilated() && groups == 1;
+
+  auto threads = at::get_num_threads();
+  use = use && threads > 1 && (output_channel < input_channel);
+
+  return use;
 }
 
 DEFINE_DISPATCH(conv_depthwise2d_backward_stub);
