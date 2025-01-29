@@ -395,6 +395,7 @@ class Timer:
             min_run_time: float = 0.01,
             max_run_time: float = 10.0,
             callback: Optional[Callable[[int, float], NoReturn]] = None,
+            min_times: int = 4,
     ) -> common.Measurement:
         """Similar to `blocked_autorange` but also checks for variablility in measurements
         and repeats until iqr/median is smaller than `threshold` or `max_run_time` is reached.
@@ -429,13 +430,13 @@ class Timer:
             repetition counts, and can be used to compute statistics.
             (mean, median, etc.)
         """
-        number = self._estimate_block_size(min_run_time=0.05)
+        number = self._estimate_block_size(min_run_time)
 
         def time_hook() -> float:
             return self._timeit(number)
 
         def stop_hook(times: List[float]) -> bool:
-            if len(times) > 3:
+            if len(times) >= min_times:
                 return common.Measurement(
                     number_per_run=number,
                     raw_times=times,
