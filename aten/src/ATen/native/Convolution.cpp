@@ -535,7 +535,7 @@ struct ConvParams {
            && !(groups > 1 && is_dilated()) // MIOpen currently does not support dilation with groups of size > 1
            ;
   }
-  bool use_zero_copy_2d(const at::Tensor& input, const at::Tensor& weight) const  {
+  bool use_zero_copy_2d(const at::Tensor& input, const at::Tensor& weight, bool ignore_weight_layout = false) const  {
     // Requires row-major gemm that is provided by BLAS
     if constexpr (!AT_BUILD_WITH_BLAS()) {
       return false;
@@ -564,6 +564,13 @@ struct ConvParams {
       weight.is_non_overlapping_and_dense() &&
       input.is_contiguous(at::MemoryFormat::ChannelsLast) &&
       !transposed;
+
+    if (!ignore_weight_layout) {
+      bool are_weights_HWIO = weight.stride(0) == 1 &&
+                              weight.stride(1) == weight.size(0) &&
+                              weight.stride(3) == weight.size(0) * weight.size(1);
+      use = use && are_weights_HWIO;
+    }
 
     // If heuristic is disabled, return use as is, but also disable ZeroCopy2D_Ext
     if (!use || !heuristic)
@@ -690,7 +697,7 @@ bool will_use_zero_copy_conv2d_dynamic(
   params.transposed = transposed;
   params.groups = groups;
 
-  return params.use_zero_copy_2d(input, weight);
+  return params.use_zero_copy_2d(input, weight, true);
 }
 
 // Returns if ZeroCopy2D will be used for the given conv2d configuration
