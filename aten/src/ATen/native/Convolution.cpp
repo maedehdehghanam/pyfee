@@ -579,10 +579,14 @@ struct ConvParams {
     auto threads = at::get_num_threads();
     auto input_channel = at::symint::size<T>(input, 1);
     auto input_height = at::symint::size<T>(input, 2);
-    auto input_width = at::symint::size<T>(input, 3);
     auto output_channel = at::symint::size<T>(weight, 0);
 
-    use = use && threads > 1 && (output_channel < input_channel || input_height == 1 || input_width == 1);
+    use = use && groups == 1 && threads > 1;
+    if (output_channel < input_channel) {
+      use = use && 1 < input_height && input_height < input_channel;
+    } else {
+      use = use && 1 == input_height;
+    }
 
     return use;
   }
