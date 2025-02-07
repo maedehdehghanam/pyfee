@@ -332,6 +332,8 @@ class Timer:
         self,
         callback: Optional[Callable[[int, float], NoReturn]] = None,
         min_run_time: float = 0.2,
+        min_times: int = 4,
+        min_number: int = 1,
     ) -> common.Measurement:
         """Measure many replicates while keeping timer overhead to a minimum.
 
@@ -370,12 +372,13 @@ class Timer:
             (mean, median, etc.)
         """
         number = self._estimate_block_size(min_run_time)
+        number = max(number, min_number)
 
         def time_hook() -> float:
             return self._timeit(number)
 
         def stop_hook(times: List[float]) -> bool:
-            return True
+            return len(times) >= min_times
 
         times = self._threaded_measurement_loop(
             number, time_hook, stop_hook,
