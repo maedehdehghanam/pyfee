@@ -12949,12 +12949,12 @@
 - func: thnn_conv2d(Tensor self, Tensor weight, SymInt[2] kernel_size, Tensor? bias=None, SymInt[2] stride=1, SymInt[2] padding=0) -> Tensor
   python_module: nn
 
-- func: will_use_zero_copy_conv2d_static(int input_channels, int output_channels, Tensor weight, SymInt[2] dilation=1, SymInt groups=1, bool transposed=False) -> bool
+- func: will_use_zero_copy_conv2d_static(int input_channels, int output_channels, Tensor weight, SymInt[2] stride=1, SymInt[2] padding=0, SymInt[2] dilation=1, SymInt groups=1, bool transposed=False) -> bool
   python_module: nn
   dispatch:
     CPU: will_use_zero_copy_conv2d_static
 
-- func: will_use_zero_copy_conv2d_dynamic(Tensor self, Tensor weight, SymInt[2] dilation=1, SymInt groups=1, bool transposed=False) -> bool
+- func: will_use_zero_copy_conv2d_dynamic(Tensor self, Tensor weight, SymInt[2] stride=1, SymInt[2] padding=0, SymInt[2] dilation=1, SymInt groups=1, bool transposed=False) -> bool
   python_module: nn
   dispatch:
     CPU: will_use_zero_copy_conv2d_dynamic

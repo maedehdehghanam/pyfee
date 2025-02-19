@@ -572,20 +572,28 @@ struct ConvParams {
       use = use && are_weights_HWIO;
     }
 
-    // If heuristic is disabled, return use as is, but also disable ZeroCopy2D_Ext
+    // If heuristic is disabled, return use as is
     if (!use || !heuristic)
-      return use && !is_dilated() && groups == 1;
+      return use;
 
     auto threads = at::get_num_threads();
     auto input_channel = at::symint::size<T>(input, 1);
     auto input_height = at::symint::size<T>(input, 2);
+    auto input_width = at::symint::size<T>(input, 3);
     auto output_channel = at::symint::size<T>(weight, 0);
+    auto filter_height = at::symint::size<T>(weight, 2);
+    auto filter_width = at::symint::size<T>(weight, 3);
 
-    use = use && groups == 1 && threads > 1;
-    if (output_channel < input_channel) {
-      use = use && 1 < input_height && input_height < input_channel;
+    auto output_height = (input_height + 2 * padding[0] - filter_height) / stride[0] + 1;
+
+    if (threads == 1) {
+      use = use && input_height == 1
+        && input_width == 1;
     } else {
-      use = use && 1 == input_height;
+      use = use && groups == 1
+        && output_height < filter_width * input_channel
+        && output_height != 1
+        && output_channel < filter_width * input_channel;
     }
 
     return use;
@@ -693,10 +701,14 @@ struct ConvParams {
 bool will_use_zero_copy_conv2d_dynamic(
     const Tensor& input,
     const Tensor& weight,
+    IntArrayRef stride,
+    IntArrayRef padding,
     IntArrayRef dilation,
     int64_t groups, bool transposed) {
 
   ConvParams<int64_t> params;
+  params.stride = expand_param_if_needed(stride, "stride", 2);
+  params.padding = expand_param_if_needed(padding, "padding", 2);
   params.dilation = expand_param_if_needed(dilation, "dilation", 2);
   params.transposed = transposed;
   params.groups = groups;
@@ -710,10 +722,14 @@ bool will_use_zero_copy_conv2d_static(
     int64_t input_channel,
     int64_t output_channel,
     const Tensor& weight,
+    IntArrayRef stride,
+    IntArrayRef padding,
     IntArrayRef dilation,
     int64_t groups, bool transposed) {
 
   ConvParams<int64_t> params;
+  params.stride = expand_param_if_needed(stride, "stride", 2);
+  params.padding = expand_param_if_needed(padding, "padding", 2);
   params.dilation = expand_param_if_needed(dilation, "dilation", 2);
   params.transposed = transposed;
   params.groups = groups;
