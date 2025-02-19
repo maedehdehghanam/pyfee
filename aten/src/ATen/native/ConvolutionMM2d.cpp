@@ -904,7 +904,6 @@ Tensor& zero_copy_conv2d_forward_out_cpu(
   const Tensor &input = self;
   // Change weight layout to KH,KW,IC,OC if not already
   Tensor weight = weight_.permute({2, 3, 1, 0});
-  TORCH_CHECK(weight.is_contiguous(), "HWIO weight expected");
   weight = weight.contiguous();
 
   // Height and width are swapped, using channel last manually
@@ -1046,7 +1045,6 @@ Tensor& zero_copy_conv2d_ext_forward_out_cpu(
   const Tensor& input = self;
   // Change weight layout to KH,KW,IC,OC if not already
   Tensor weight = weight_.permute({2, 3, 1, 0});
-  TORCH_CHECK(weight.is_contiguous(), "HWIO weight expected");
   weight = weight.contiguous();
 
   // Height and width are swapped, using channel last manually

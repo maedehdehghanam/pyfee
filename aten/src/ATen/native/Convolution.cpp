@@ -557,6 +557,13 @@ struct ConvParams {
       }
     }
 
+    if (const char* env = std::getenv("ZC_WEIGHTS_LAYOUT")) {
+      std::string env_str(env);
+      if (env_str == "OHWI") {
+        ignore_weight_layout = true;
+      }
+    }
+
     use = use &&
       input.device().is_cpu() &&
       input.ndimension() == 4 &&
