@@ -762,10 +762,13 @@ bool will_use_zero_copy_conv2d_static(
 
   // If heuristic is disabled, return use as is, but also disable ZeroCopy2D_Ext
   if (!use || !heuristic)
-    return use && !params.is_dilated() && groups == 1;
+    return use;
 
+  auto filter_width = at::symint::size<int64_t>(weight, 3);
   auto threads = at::get_num_threads();
-  use = use && threads > 1 && (output_channel < input_channel);
+  use = use
+    && threads > 1
+    && output_channel < filter_width * input_channel;
 
   return use;
 }
