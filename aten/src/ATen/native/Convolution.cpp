@@ -577,31 +577,27 @@ struct ConvParams {
                               weight.stride(1) == weight.size(0) &&
                               weight.stride(3) == weight.size(0) * weight.size(1);
       use = use && are_weights_HWIO;
+      // If weights are in HWIO format, use ZeroCopy2D
+      if (use)
+        return true;
     }
 
     // If heuristic is disabled, return use as is
     if (!use || !heuristic)
       return use;
 
-    auto threads = at::get_num_threads();
     auto input_channel = at::symint::size<T>(input, 1);
     auto input_height = at::symint::size<T>(input, 2);
     auto input_width = at::symint::size<T>(input, 3);
-    auto output_channel = at::symint::size<T>(weight, 0);
     auto filter_height = at::symint::size<T>(weight, 2);
     auto filter_width = at::symint::size<T>(weight, 3);
 
     auto output_height = (input_height + 2 * padding[0] - filter_height) / stride[0] + 1;
+    auto output_width = (input_width + 2 * padding[1] - filter_width) / stride[1] + 1;
 
-    if (threads == 1) {
-      use = use && input_height == 1
-        && input_width == 1;
-    } else {
-      use = use && groups == 1
-        && output_height < filter_width * input_channel
-        && output_height != 1
-        && output_channel < filter_width * input_channel;
-    }
+    use = use && groups == 1                          // not grouped
+      && (filter_height != 1 || filter_width != 1)    // not pointwise
+      && output_height < input_channel && output_width < input_channel;
 
     return use;
   }
@@ -734,13 +730,6 @@ bool will_use_zero_copy_conv2d_static(
     IntArrayRef dilation,
     int64_t groups, bool transposed) {
 
-  ConvParams<int64_t> params;
-  params.stride = expand_param_if_needed(stride, "stride", 2);
-  params.padding = expand_param_if_needed(padding, "padding", 2);
-  params.dilation = expand_param_if_needed(dilation, "dilation", 2);
-  params.transposed = transposed;
-  params.groups = groups;
-
   // Requires row-major gemm that is provided by BLAS
   if constexpr (!AT_BUILD_WITH_BLAS()) {
     return false;
@@ -762,20 +751,38 @@ bool will_use_zero_copy_conv2d_static(
     }
   }
 
+  bool ignore_weight_layout = false;
+  if (const char* env = std::getenv("ZC_WEIGHTS_LAYOUT")) {
+    std::string env_str(env);
+    if (env_str == "OHWI") {
+      ignore_weight_layout = true;
+    }
+  }
+
   use = use &&
     weight.ndimension() == 4 &&
     weight.is_non_overlapping_and_dense() &&
     !transposed;
 
-  // If heuristic is disabled, return use as is, but also disable ZeroCopy2D_Ext
+  if (!ignore_weight_layout) {
+    bool are_weights_HWIO = weight.stride(0) == 1 &&
+                            weight.stride(1) == weight.size(0) &&
+                            weight.stride(3) == weight.size(0) * weight.size(1);
+    use = use && are_weights_HWIO;
+  }
+
+  // If heuristic is disabled, return use as is
   if (!use || !heuristic)
     return use;
 
-  auto filter_width = at::symint::size<int64_t>(weight, 3);
   auto threads = at::get_num_threads();
+  auto filter_height = at::symint::size<int64_t>(weight, 2);
+  auto filter_width = at::symint::size<int64_t>(weight, 3);
   use = use
     && threads > 1
-    && output_channel < filter_width * input_channel;
+    && groups == 1                                  // not grouped
+    && (filter_height != 1 || filter_width != 1)    // not pointwise
+    && output_channel < input_channel;
 
   return use;
 }
