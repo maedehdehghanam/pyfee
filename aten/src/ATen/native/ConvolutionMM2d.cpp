@@ -1048,7 +1048,11 @@ Tensor& zero_copy_conv2d_ext_forward_out_cpu(
   weight = weight.contiguous();
 
   // Height and width are swapped, using channel last manually
-  output.resize_({batch_size, output_width, output_height, output_channels});
+  if (transform_output) {
+    output.resize_({batch_size, output_height, output_width, output_channels});
+  } else {
+    output.resize_({batch_size, output_width, output_height, output_channels});
+  }
   TORCH_CHECK(output.is_contiguous(), "Contiguous output tensor expected");
 
   AT_DISPATCH_ALL_TYPES_AND2(kBFloat16, kHalf, input.scalar_type(), "zero_copy_conv2d_cpu", [&]{
