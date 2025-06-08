@@ -303,11 +303,9 @@ template <typename scalar_t>
 static void zero_copy_conv2d_update_output_frame(
     const scalar_t *input,
     scalar_t *output,
-    scalar_t *transposed_output,
     const scalar_t *filters,
     std::optional<const scalar_t*> bias,
     int64_t ow,
-    bool transform_output,
     int64_t FH,
     int64_t FW,
     int64_t SH,
@@ -325,9 +323,9 @@ static void zero_copy_conv2d_update_output_frame(
   for (int i = 0; i < OH; ++i) {
     for (int j = 0; j < M; ++j) {
       if (bias.has_value()) {
-        output[i * M + j] = bias.value()[j];
+        output[i * OW * M + ow * M + j] = bias.value()[j];
       } else {
-        output[i * M + j] = 0;
+        output[i * OW * M + ow * M + j] = 0;
       }
     }
   }
@@ -366,10 +364,10 @@ static void zero_copy_conv2d_update_output_frame(
       const scalar_t* a = &input[(height_start * W + width_start) * C];
 
       // Start of the output block of size 1,OH,M
-      scalar_t* c = output;
+      scalar_t* c = &output[ow * M];
       if (height_offset < 0) {
         int64_t offset = static_cast<int64_t>(floorf(static_cast<float>(height_offset) / static_cast<float>(SH)));
-        c = &output[-offset * M];
+        c = &output[ow * M -offset * OW * M];
       }
 
       int64_t M_dim = height_slice;
@@ -379,7 +377,7 @@ static void zero_copy_conv2d_update_output_frame(
       scalar_t beta = 1.0f;
       int64_t lda = W*C*SH;
       int64_t ldb = N_dim;
-      int64_t ldc = N_dim;
+      int64_t ldc = N_dim * OW;
       at::native::cpublas::gemm_row_major(
           TransposeType::NoTranspose,
           TransposeType::NoTranspose,
@@ -391,15 +389,6 @@ static void zero_copy_conv2d_update_output_frame(
           c, ldc);
     }
   }
-
-  // Copy the temporary output to the actual output
-  if (transform_output) {
-    for (auto i = 0; i < OH; ++i) {
-      for (auto j = 0; j < M; ++j) {
-        transposed_output[(i * OW + ow) * M + j] = output[i * M + j];
-      }
-    }
-  }
 }
 
 template <typename scalar_t>
@@ -407,11 +396,9 @@ static void zero_copy_conv2d_ext_update_output_frame(
     const scalar_t* input,
     scalar_t* tmp_input,
     scalar_t* output,
-    scalar_t* transposed_output,
     const scalar_t* filters,
     std::optional<const scalar_t*> bias,
     int64_t ow,
-    bool transform_output,
     int64_t FH,
     int64_t FW,
     int64_t SH,
@@ -434,9 +421,9 @@ static void zero_copy_conv2d_ext_update_output_frame(
   for (int i = 0; i < OH; ++i) {
     for (int j = 0; j < M; ++j) {
       if (bias.has_value()) {
-        output[i * M + j] = bias.value()[j];
+        output[i * OW * M + ow * M + j] = bias.value()[j];
       } else {
-        output[i * M + j] = 0;
+        output[i * OW * M + ow * M + j] = 0;
       }
     }
   }
@@ -495,11 +482,11 @@ static void zero_copy_conv2d_ext_update_output_frame(
         const scalar_t* a = tmp_input;
 
         // Start of the output block of size 1,OH,M
-        scalar_t* c = &output[gr * M_GR];
+        scalar_t* c = &output[ow * M + gr * M_GR];
         if (height_offset < 0) {
           int64_t offset = static_cast<int64_t>(
               floorf(static_cast<float>(height_offset) / static_cast<float>(SH)));
-          c = &output[-offset * M + gr * M_GR];
+          c = &output[ow * M - offset * OW * M + gr * M_GR];
         }
 
         int64_t M_dim = height_slice;
@@ -509,7 +496,7 @@ static void zero_copy_conv2d_ext_update_output_frame(
         scalar_t beta = 1.0f;
         int64_t lda = K_dim;
         int64_t ldb = M;
-        int64_t ldc = M;
+        int64_t ldc = M * OW;
         at::native::cpublas::gemm_row_major(
             TransposeType::NoTranspose,
             TransposeType::NoTranspose,
@@ -524,15 +511,6 @@ static void zero_copy_conv2d_ext_update_output_frame(
             beta,
             c,
             ldc);
-      }
-    }
-  }
-
-  // Copy the temporary output to the actual output
-  if (transform_output) {
-    for (auto i = 0; i < OH; ++i) {
-      for (auto j = 0; j < M; ++j) {
-        transposed_output[(i * OW + ow) * M + j] = output[i * M + j];
       }
     }
   }
@@ -861,8 +839,7 @@ Tensor& zero_copy_conv2d_forward_out_cpu(
     IntArrayRef kernel_size, const std::optional<Tensor>& bias_opt,
     IntArrayRef stride,
     IntArrayRef padding,
-    Tensor& output,
-    bool transform_output = true) {
+    Tensor& output) {
   // See [Note: hacky wrapper removal for optional tensor]
 
   TORCH_CHECK(kernel_size.size() == 2, "2D kernel_size expected");
@@ -907,11 +884,7 @@ Tensor& zero_copy_conv2d_forward_out_cpu(
   weight = weight.contiguous();
 
   // Height and width are swapped, using channel last manually
-  if (transform_output) {
-    output.resize_({batch_size, output_height, output_width, output_channels});
-  } else {
-    output.resize_({batch_size, output_width, output_height, output_channels});
-  }
+  output.resize_({batch_size, output_height, output_width, output_channels});
   TORCH_CHECK(output.is_contiguous(), "Contiguous output tensor expected");
 
   AT_DISPATCH_ALL_TYPES_AND2(kBFloat16, kHalf, input.scalar_type(), "zero_copy_conv2d_cpu", [&]{
@@ -924,29 +897,18 @@ Tensor& zero_copy_conv2d_forward_out_cpu(
     }
 
     at::parallel_for(0, batch_size*output_width, 0, [&](int64_t start, int64_t end) {
-      Tensor tmp_output;
-      if (transform_output) {
-        tmp_output = at::empty({output_height, output_channels}, output.options());
-      }
-
       for (const auto t : c10::irange(start, end)) {
         long b_idx = t / output_width;
         long ow_idx = t % output_width;
         auto input_t = &input_ptr[b_idx * input_height * input_width * input_channels];
-        auto output_t = &output_ptr[(b_idx * output_width + ow_idx) * output_height * output_channels];
-        if (transform_output) {
-          output_t = tmp_output.data_ptr<scalar_t>();
-        }
-        auto transposed_output = &output_ptr[b_idx * output_width * output_height * output_channels];
+        auto output_t = &output_ptr[b_idx * output_width * output_height * output_channels];
 
         zero_copy_conv2d_update_output_frame(
             input_t,
             output_t,
-            transposed_output,
             weight_ptr,
             bias_ptr,
             ow_idx,
-            transform_output,
             kernel_height,
             kernel_width,
             stride_height,
@@ -980,15 +942,6 @@ Tensor zero_copy_conv2d_forward_cpu(
   const Tensor& bias = *bias_maybe_owned;
 
   auto output = at::empty({0}, self.options());
-  bool transform_output = true;
-
-  if (const char* env = std::getenv("ZC_TRANSFORM_OUTPUT")) {
-    std::string env_str(env);
-    if (env_str == "FALSE") {
-      transform_output = false;
-    }
-  }
-
   at::native::zero_copy_conv2d_forward_out_cpu(
       self,
       weight,
@@ -996,8 +949,7 @@ Tensor zero_copy_conv2d_forward_cpu(
       bias,
       stride,
       padding,
-      output,
-      transform_output);
+      output);
 
   return output;
 }
@@ -1010,8 +962,7 @@ Tensor& zero_copy_conv2d_ext_forward_out_cpu(
     IntArrayRef padding,
     IntArrayRef dilation,
     int64_t groups,
-    Tensor& output,
-    bool transform_output = true) {
+    Tensor& output) {
   // See [Note: hacky wrapper removal for optional tensor]
 
   TORCH_CHECK(kernel_size.size() == 2, "2D kernel_size expected");
@@ -1047,12 +998,7 @@ Tensor& zero_copy_conv2d_ext_forward_out_cpu(
   Tensor weight = weight_.permute({2, 3, 1, 0});
   weight = weight.contiguous();
 
-  // Height and width are swapped, using channel last manually
-  if (transform_output) {
-    output.resize_({batch_size, output_height, output_width, output_channels});
-  } else {
-    output.resize_({batch_size, output_width, output_height, output_channels});
-  }
+  output.resize_({batch_size, output_height, output_width, output_channels});
   TORCH_CHECK(output.is_contiguous(), "Contiguous output tensor expected");
 
   AT_DISPATCH_ALL_TYPES_AND2(kBFloat16, kHalf, input.scalar_type(), "zero_copy_conv2d_cpu", [&]{
@@ -1065,10 +1011,6 @@ Tensor& zero_copy_conv2d_ext_forward_out_cpu(
     }
 
     at::parallel_for(0, batch_size * output_width, 0, [&](int64_t start, int64_t end) {
-      Tensor tmp_output;
-      if (transform_output) {
-        tmp_output = at::empty({output_height, output_channels}, output.options());
-      }
       Tensor tmp_input = at::empty({output_height, kernel_width, input_channels / groups}, output.options());
       scalar_t* tmp_input_ptr = tmp_input.data_ptr<scalar_t>();
 
@@ -1076,21 +1018,15 @@ Tensor& zero_copy_conv2d_ext_forward_out_cpu(
         long b_idx = t / output_width;
         long ow_idx = t % output_width;
         auto input_t = &input_ptr[b_idx * input_height * input_width * input_channels];
-        auto output_t = &output_ptr[(b_idx * output_width + ow_idx) * output_height * output_channels];
-        if (transform_output) {
-          output_t = tmp_output.data_ptr<scalar_t>();
-        }
-        auto transposed_output = &output_ptr[b_idx * output_width * output_height * output_channels];
+        auto output_t = &output_ptr[b_idx * output_width * output_height * output_channels];
 
         zero_copy_conv2d_ext_update_output_frame(
             input_t,
             tmp_input_ptr,
             output_t,
-            transposed_output,
             weight_ptr,
             bias_ptr,
             ow_idx,
-            transform_output,
             kernel_height,
             kernel_width,
             stride_height,
@@ -1131,14 +1067,6 @@ Tensor zero_copy_conv2d_ext_forward_cpu(
   const Tensor& bias = *bias_maybe_owned;
 
   auto output = at::empty({0}, self.options());
-  bool transform_output = true;
-
-  if (const char* env = std::getenv("ZC_TRANSFORM_OUTPUT")) {
-    std::string env_str(env);
-    if (env_str == "FALSE") {
-      transform_output = false;
-    }
-  }
 
   at::native::zero_copy_conv2d_ext_forward_out_cpu(
       self,
@@ -1149,8 +1077,7 @@ Tensor zero_copy_conv2d_ext_forward_cpu(
       padding,
       dilation,
       groups,
-      output,
-      transform_output);
+      output);
 
   return output;
 }
