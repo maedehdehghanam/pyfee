@@ -1755,7 +1755,6 @@ at::Tensor _convolution(
     default: backend_str = "Unknown";
       break;
   }
-
   // Call the backend.
   Tensor output;
   auto kernel_size = weight.sizes().slice(2);

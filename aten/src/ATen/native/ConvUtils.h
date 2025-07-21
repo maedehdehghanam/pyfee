@@ -381,32 +381,53 @@ inline bool miopen_conv_use_channels_last(const at::Tensor& input, const at::Ten
 
   return can_use_miopen_channels_last_2d || can_use_miopen_channels_last_3d;
 }
+/* *******************************************************************************************
+  Determines whether to use the channels-last (NHWC) memory format for the convolution output,
+  based on the specified flag and input types.
 
-inline bool mkldnn_conv_use_channels_last(const at::Tensor& input, const at::Tensor& weight) {
+  Parameters:
+    flag:
+      0 - Enforce contiguous (NCHW) output format → return false.
+      1 - Enforce channels-last (NHWC) output format → return true.
+      2 - Use default heuristic:
+            - Return false if either input or weight is of type float64 (double),
+              as NHWC is not supported for float64.
+            - Otherwise, allow channels-last format.
 
-  // disable NHWC for float64 input.
-  if (input.scalar_type() == at::kDouble ||
-      weight.scalar_type() == at::kDouble) {
+* *******************************************************************************************/
+//TODO => CHECK FOR EDGE CASES
+inline bool mkldnn_conv_use_channels_last(const at::Tensor& input, const at::Tensor& weight, int flag = 2) {
+  if(flag == 0){
     return false;
   }
-
-  // disable NHWC for MkldnnCPU tensor.
-  if (input.is_mkldnn() || weight.is_mkldnn()) {
-    return false;
+  else if(flag == 1){
+    return true;
   }
+  else {
+    // disable NHWC for float64 input.
+    if (input.scalar_type() == at::kDouble ||
+        weight.scalar_type() == at::kDouble) {
+      return false;
+    }
 
-  auto input_memory_format = input.suggest_memory_format();
-  auto weight_memory_format = weight.suggest_memory_format();
+    // disable NHWC for MkldnnCPU tensor.
+    if (input.is_mkldnn() || weight.is_mkldnn()) {
+      return false;
+    }
 
-  bool can_use_mkldnn_channels_last_2d =
-      (input_memory_format  == at::MemoryFormat::ChannelsLast) ||
-      (weight_memory_format == at::MemoryFormat::ChannelsLast);
+    auto input_memory_format = input.suggest_memory_format();
+    auto weight_memory_format = weight.suggest_memory_format();
 
-  bool can_use_mkldnn_channels_last_3d =
-      (input_memory_format  == at::MemoryFormat::ChannelsLast3d) ||
-      (weight_memory_format == at::MemoryFormat::ChannelsLast3d);
+    bool can_use_mkldnn_channels_last_2d =
+        (input_memory_format  == at::MemoryFormat::ChannelsLast) ||
+        (weight_memory_format == at::MemoryFormat::ChannelsLast);
 
-  return can_use_mkldnn_channels_last_2d || can_use_mkldnn_channels_last_3d;
+    bool can_use_mkldnn_channels_last_3d =
+        (input_memory_format  == at::MemoryFormat::ChannelsLast3d) ||
+        (weight_memory_format == at::MemoryFormat::ChannelsLast3d);
+
+    return can_use_mkldnn_channels_last_2d || can_use_mkldnn_channels_last_3d;
+  }
 }
 
 inline bool thnn_conv_use_channels_last(const at::Tensor& input, const at::Tensor& weight) {
