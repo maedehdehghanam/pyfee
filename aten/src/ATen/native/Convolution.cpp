@@ -1841,6 +1841,7 @@ at::Tensor _convolution(
         weight = weight.contiguous(backend_memory_format);
         bias = bias.defined() ? bias.contiguous() : bias;
       }
+      //forcing contiguous format for output
       output = at::mkldnn_convolution(
           input, weight, bias, params.padding, params.stride, params.dilation, params.groups);
 #else

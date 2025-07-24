@@ -21,9 +21,9 @@
 
 namespace at { namespace native {
 
-Tensor mkldnn_convolution(
+Tensor mkldnn_convolution_with_flag(
     const Tensor& input, const Tensor& weight, const std::optional<Tensor>& bias_opt,
-    IntArrayRef padding, IntArrayRef stride, IntArrayRef dilation, int64_t groups) {
+    IntArrayRef padding, IntArrayRef stride, IntArrayRef dilation, int64_t groups, int output_format_flag = 2) {
   TORCH_CHECK(false, "mkldnn_convolution_forward: ATen not compiled with MKLDNN support");
 }
 
@@ -282,7 +282,8 @@ Tensor mkldnn_convolution(
     IntArrayRef padding,
     IntArrayRef stride,
     IntArrayRef dilation,
-    int64_t groups) {
+    int64_t groups
+    ) {
   bool use_channels_last = mkldnn_conv_use_channels_last(input_t, weight_t);
   return _mkldnn_convolution(
       input_t,

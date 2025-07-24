@@ -396,7 +396,7 @@ inline bool miopen_conv_use_channels_last(const at::Tensor& input, const at::Ten
 
 * *******************************************************************************************/
 //TODO => CHECK FOR EDGE CASES
-inline bool mkldnn_conv_use_channels_last(const at::Tensor& input, const at::Tensor& weight, int flag = 2) {
+inline bool mkldnn_conv_use_channels_last(const at::Tensor& input, const at::Tensor& weight, int flag = 1) {
   if(flag == 0){
     return false;
   }
