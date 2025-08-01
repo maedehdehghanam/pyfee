@@ -1598,6 +1598,8 @@ static inline at::MemoryFormat determine_backend_memory_format(
 #if !defined(C10_MOBILE)
   auto k = weight.ndimension();
   // See Note [Mobile check segfaults]
+  // ok now we know that if the weight or input is the channels last format the convolution will be done in a channel last format. NOW WHAT WE NEED TO MAKE SURE OF IS THAT 
+  //CHANGING THE LAYOUT FOR THE WEIGHTS WONT BREAK THE WHOLE CONVOLUTION
   switch(backend) {
     case ConvBackend::Cudnn:
     case ConvBackend::CudnnTranspose:
@@ -1699,7 +1701,7 @@ at::Tensor _convolution(
       (input.requires_grad() || weight.requires_grad() || (bias.defined() && bias.requires_grad()));
   ConvBackend backend = _select_conv_backend(input, weight, bias, c10::OptionalIntArrayRef(bias_sizes_opt), need_backward, params);
   at::MemoryFormat backend_memory_format = determine_backend_memory_format(input, weight, backend);
-
+   //TODO CHECK OTHER ALGORITHMS EXCEPT FOR THE   MKLDNN ONE TO CHANGE TO CHANNEL LAST AND CONTIGUOUS AND WHAT DOES IT NEED?!
   std::string backend_str;
   switch (backend) {
     case ConvBackend::CudaDepthwise2d: backend_str = "CudaDepthwise2d";

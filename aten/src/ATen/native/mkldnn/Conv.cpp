@@ -209,9 +209,6 @@ static void _mkldnn_convolution_out (
         op_attr);
   }
 }
-/*
-  JUST CHANGE THE FORMAT HERE!!!!!!!!! ALWAYS RETURN CONTIGUOUS
-*/
 static Tensor _mkldnn_convolution(
     const Tensor& input_t,
     const Tensor& weight_t,
@@ -268,11 +265,14 @@ static Tensor _mkldnn_convolution(
       use_channels_last,
       op_attr);
   
-  // mkldnn to dense returns contiguous
+  //change mkldnn to dense for contiguous and channels last
+
   //return mkldnn_to_dense(MKLDNNTensor(y, input_t.options()));
-  //return output.contiguous();
+
+  //this is the default code
   
   if (input_t.is_mkldnn()) {
+
     return MKLDNNTensor(y, input_t.options());
   } else if (!use_channels_last) {
     //input is contiguous
@@ -282,6 +282,7 @@ static Tensor _mkldnn_convolution(
     //input channels last
     return output;
   }
+  
   
 }
 

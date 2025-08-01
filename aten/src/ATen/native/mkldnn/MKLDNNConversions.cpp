@@ -27,6 +27,7 @@ namespace at { namespace native {
 #if AT_MKLDNN_ENABLED()
 
 Tensor mkldnn_to_dense(const Tensor& mkldnn_tensor, std::optional<ScalarType> dtype, std::optional<bool> masked_grad) {
+
   TORCH_CHECK(mkldnn_tensor.scalar_type() == ScalarType::Float ||
               mkldnn_tensor.scalar_type() == ScalarType::BFloat16 ||
               mkldnn_tensor.scalar_type() == ScalarType::Half ||
@@ -47,11 +48,48 @@ Tensor mkldnn_to_dense(const Tensor& mkldnn_tensor, std::optional<ScalarType> dt
     TORCH_CHECK(mkldnn_tensor.scalar_type() == data_type,
             "For int8, uint8 mkldnn_tensor input, we should not change the data type.");
   }
+
+
+  //c10::contiguous_strides 
   // NOTE: int32_t dims from ideep::tensor but sizes needs int64_t
+
+  
+  // Tensor cpu_tensor = at::empty(
+  //   std::vector<int64_t>(dims.begin(), dims.end()),
+  //   mkldnn_tensor.options().layout(c10::kStrided).dtype(data_type));
+  // if (stensor.is_empty()) return cpu_tensor;
+
+  // // this part changes the scattered to a block to my understanding 
+  // auto pub_tensor =
+  //     data_type == ScalarType::Float
+  //     ? stensor.to_public(cpu_tensor.template data_ptr<float>(),
+  //                         ideep::tensor::data_type::f32)
+  //     : (data_type == ScalarType::BFloat16
+  //        ? stensor.to_public(cpu_tensor.template data_ptr<BFloat16>(),
+  //                        ideep::tensor::data_type::bf16)
+  //        : (data_type == ScalarType::Half
+  //           ? stensor.to_public(cpu_tensor.template data_ptr<Half>(),
+  //                           ideep::tensor::data_type::f16)
+  //         : (data_type == ScalarType::Byte
+  //             ? stensor.to_public(cpu_tensor.template data_ptr<uint8_t>(),
+  //                             ideep::tensor::data_type::u8)
+  //             : stensor.to_public(cpu_tensor.template data_ptr<int8_t>(),
+  //                             ideep::tensor::data_type::s8)
+  //           )
+  //          )
+  //     );
+
+  // cpu_tensor.as_strided_(dims, pub_tensor.get_strides());
+  // // Make sure that NC11 strides follow formula of contiguous tensor. ---> it is changed to channel last now!
+  // return cpu_tensor.contiguous().resize_(dims, c10::MemoryFormat::ChannelsLast);
+  // //return cpu_tensor.contiguous().resize_(dims, c10::MemoryFormat::Contiguous);
+
   Tensor cpu_tensor = at::empty(
     std::vector<int64_t>(dims.begin(), dims.end()),
     mkldnn_tensor.options().layout(c10::kStrided).dtype(data_type));
   if (stensor.is_empty()) return cpu_tensor;
+
+  // this part changes the scattered to a block to my understanding 
   auto pub_tensor =
       data_type == ScalarType::Float
       ? stensor.to_public(cpu_tensor.template data_ptr<float>(),
@@ -70,10 +108,14 @@ Tensor mkldnn_to_dense(const Tensor& mkldnn_tensor, std::optional<ScalarType> dt
             )
            )
       );
+
   cpu_tensor.as_strided_(dims, pub_tensor.get_strides());
-  // Make sure that NC11 strides follow formula of contiguous tensor.
+  // Make sure that NC11 strides follow formula of contiguous tensor. ---> it is changed to channel last now!
+  //return cpu_tensor.contiguous().resize_(dims, c10::MemoryFormat::ChannelsLast);
   return cpu_tensor.contiguous().resize_(dims, c10::MemoryFormat::Contiguous);
+
 }
+
 
 Tensor dense_to_mkldnn(const Tensor& cpu_tensor, std::optional<ScalarType> dtype) {
   TORCH_CHECK(cpu_tensor.device().is_cpu(),

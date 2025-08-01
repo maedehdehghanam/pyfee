@@ -395,7 +395,7 @@ inline bool miopen_conv_use_channels_last(const at::Tensor& input, const at::Ten
             - Otherwise, allow channels-last format.
 
 * *******************************************************************************************/
-//TODO => CHECK FOR EDGE CASES
+//TODO => MAKE IT ONLY BASED ON THE WEIGHTS RIGHT?=)
 inline bool mkldnn_conv_use_channels_last(const at::Tensor& input, const at::Tensor& weight, int flag = 2) {
   if(flag == 0){
     return false;
@@ -419,11 +419,11 @@ inline bool mkldnn_conv_use_channels_last(const at::Tensor& input, const at::Ten
     auto weight_memory_format = weight.suggest_memory_format();
 
     bool can_use_mkldnn_channels_last_2d =
-        (input_memory_format  == at::MemoryFormat::ChannelsLast) ||
+      //  (input_memory_format  == at::MemoryFormat::ChannelsLast) ||
         (weight_memory_format == at::MemoryFormat::ChannelsLast);
 
     bool can_use_mkldnn_channels_last_3d =
-        (input_memory_format  == at::MemoryFormat::ChannelsLast3d) ||
+      //  (input_memory_format  == at::MemoryFormat::ChannelsLast3d) ||
         (weight_memory_format == at::MemoryFormat::ChannelsLast3d);
 
     return can_use_mkldnn_channels_last_2d || can_use_mkldnn_channels_last_3d;
@@ -435,10 +435,12 @@ inline bool thnn_conv_use_channels_last(const at::Tensor& input, const at::Tenso
   auto input_memory_format = input.suggest_memory_format();
   auto weight_memory_format = weight.suggest_memory_format();
 
+  //just decide based on the weights
+  //TODO -> CHECK IF THE INPUT IS CONVERTED ANYWHERE
   bool can_use_thnn_channels_last_2d = input.device().is_cpu() && (
-      (input_memory_format  == at::MemoryFormat::ChannelsLast) || (
-       weight_memory_format == at::MemoryFormat::ChannelsLast));
-
+      //(input_memory_format  == at::MemoryFormat::ChannelsLast) || 
+      (weight_memory_format == at::MemoryFormat::ChannelsLast));
+‍  
   return can_use_thnn_channels_last_2d;
 }
 
