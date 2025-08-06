@@ -437,10 +437,10 @@ inline bool thnn_conv_use_channels_last(const at::Tensor& input, const at::Tenso
 
   //just decide based on the weights
   //TODO -> CHECK IF THE INPUT IS CONVERTED ANYWHERE
-  bool can_use_thnn_channels_last_2d = input.device().is_cpu() && (
+  bool can_use_thnn_channels_last_2d = input.device().is_cpu() && (weight_memory_format == at::MemoryFormat::ChannelsLast);
       //(input_memory_format  == at::MemoryFormat::ChannelsLast) || 
-      (weight_memory_format == at::MemoryFormat::ChannelsLast));
-‍  
+      //((weight_memory_format == at::MemoryFormat::ChannelsLast));
+      
   return can_use_thnn_channels_last_2d;
 }
 
